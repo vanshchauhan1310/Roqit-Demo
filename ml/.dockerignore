@@ -1,0 +1,6 @@
+__pycache__
+.venv
+*.pyc
+models_store
+data/raw
+data/processed
