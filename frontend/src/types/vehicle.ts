@@ -1,9 +1,11 @@
 export interface Vehicle {
   vehicle_id: string;
-  license_plate: string;
+  vehicle_type: string | null;
   make: string | null;
   model: string | null;
   year: number | null;
-  status: string;
-  created_at: string;
+  fuel_type: string | null;
+  load_capacity_kg: number | null;
+  status: string | null;
+  vehicle_age_years: number | null;
 }

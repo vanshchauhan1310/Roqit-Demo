@@ -6,10 +6,13 @@ from app.schemas.report import TripKpiSummary
 
 def get_trip_kpi_summary(db: Session) -> TripKpiSummary:
     total = db.query(Trip).count()
-    completed = db.query(Trip).filter(Trip.status == "completed").count()
-    in_progress = db.query(Trip).filter(Trip.status == "in_progress").count()
-    cancelled = db.query(Trip).filter(Trip.status == "cancelled").count()
-    on_time_rate = (completed / total) if total else None
+    delivered = db.query(Trip).filter(Trip.status == "Delivered").count()
+    delayed = db.query(Trip).filter(Trip.status == "Delayed").count()
+    in_progress = db.query(Trip).filter(Trip.status == "In-Transit").count()
+    cancelled = db.query(Trip).filter(Trip.status == "Cancelled").count()
+
+    completed = delivered + delayed
+    on_time_rate = (delivered / completed) if completed else None
 
     return TripKpiSummary(
         total_trips=total,

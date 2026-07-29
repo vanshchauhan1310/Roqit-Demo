@@ -24,7 +24,7 @@ class RouteStopRead(RouteStopBase):
 
 
 class RouteBase(BaseModel):
-    trip_id: uuid.UUID | None = None
+    trip_id: str | None = None
     name: str | None = None
 
 

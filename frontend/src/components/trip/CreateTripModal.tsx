@@ -15,7 +15,12 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
   const queryClient = useQueryClient();
 
   const mutation = useMutation({
-    mutationFn: () => createTrip({ origin, destination }),
+    mutationFn: () =>
+      createTrip({
+        trip_id: `TRP-${Date.now().toString(36).toUpperCase()}`,
+        origin,
+        destination,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["trips"] });
       onClose();
