@@ -1,22 +1,21 @@
-import uuid
-
-from sqlalchemy import String, DateTime, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import String, Float, BigInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
-
+# Maps onto the real Supabase `driver_master` table.
 class Driver(Base):
-    __tablename__ = "drivers"
+    __tablename__ = "driver_master"
 
-    driver_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    first_name: Mapped[str] = mapped_column(String(50), nullable=False)
-    last_name: Mapped[str] = mapped_column(String(50), nullable=False)
-    license_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
-    phone: Mapped[str | None] = mapped_column(String(20))
-    status: Mapped[str] = mapped_column(String(20), default="active")
-    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    driver_id: Mapped[str] = mapped_column(String, primary_key=True)
+    driver_name: Mapped[str | None] = mapped_column(String)
+    phone: Mapped[int | None] = mapped_column(BigInteger)
+    license_type: Mapped[str | None] = mapped_column(String)
+    license_expiry: Mapped[str | None] = mapped_column(String)
+    date_joined: Mapped[str | None] = mapped_column(String)
+    experience_years: Mapped[float | None] = mapped_column(Float)
+    base_location: Mapped[str | None] = mapped_column(String)
+    rating: Mapped[float | None] = mapped_column(Float)
+    status: Mapped[str | None] = mapped_column(String)
 
     trips: Mapped[list["Trip"]] = relationship(back_populates="driver")
-    driver_hours: Mapped[list["DriverHours"]] = relationship(back_populates="driver")

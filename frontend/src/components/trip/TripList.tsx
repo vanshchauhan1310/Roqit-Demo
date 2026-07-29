@@ -15,7 +15,7 @@ export function TripList({ trips }: TripListProps) {
     { header: "Origin", render: (t) => t.origin ?? "—" },
     { header: "Destination", render: (t) => t.destination ?? "—" },
     { header: "Status", render: (t) => t.status },
-    { header: "Scheduled Start", render: (t) => formatDateTime(t.scheduled_start) },
+    { header: "Pickup Time", render: (t) => formatDateTime(t.pickup_time) },
   ];
 
   return (

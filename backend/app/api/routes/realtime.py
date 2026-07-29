@@ -1,5 +1,3 @@
-import uuid
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -10,11 +8,11 @@ router = APIRouter(prefix="/realtime", tags=["realtime"])
 
 
 @router.get("/trips/{trip_id}/breadcrumbs")
-def get_trip_breadcrumbs(trip_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_trip_breadcrumbs(trip_id: str, db: Session = Depends(get_db)):
     breadcrumbs = (
         db.query(GpsBreadcrumb)
         .filter(GpsBreadcrumb.trip_id == trip_id)
-        .order_by(GpsBreadcrumb.recorded_at.desc())
+        .order_by(GpsBreadcrumb.timestamp.desc())
         .limit(500)
         .all()
     )

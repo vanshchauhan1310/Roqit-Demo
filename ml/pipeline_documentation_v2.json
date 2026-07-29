@@ -1,0 +1,23 @@
+{
+  "version": "v2 - rebuilt on trips.csv/drivers_master/vehicles_master",
+  "target_definition": "is_delayed = 1 if status=='Delayed' (delay_minutes > 90), real business ground truth",
+  "training_data_size": {
+    "total_trips": 1298,
+    "n_vehicles": 25,
+    "n_drivers": 32
+  },
+  "performance": {
+    "cv_mean_auc": 0.7336675554301764,
+    "cv_std_auc": 0.037226916269639615,
+    "test_auc": 0.6459134615384615,
+    "test_precision": 0.2289156626506024,
+    "test_recall": 0.475,
+    "test_f1": 0.3089430894308943
+  },
+  "comparison_to_v1": "v1 (139 trips, constructed target) had leakage issues and ~0.5 real AUC ceiling. v2 (1298 trips, real target+causal features) achieves genuine 0.65-0.73 AUC with no dominant/leaked feature - a materially more trustworthy and usable model.",
+  "known_limitations": [
+    "Precision is modest (0.23) - expect meaningful false-positive rate in production alerts.",
+    "vehicles_master last_service_date was a single snapshot (not history) - excluded as invalid for 70% of trips.",
+    "Still single-snapshot master tables for driver/vehicle static attributes - a true SCD (slowly-changing dimension) history would improve accuracy further."
+  ]
+}

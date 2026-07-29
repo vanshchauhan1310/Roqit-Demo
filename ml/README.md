@@ -13,6 +13,20 @@ Standalone Python service for Fleet Optimization Platform models. Runs independe
 - `models_store/` — trained model artifacts (`.pkl` / `.joblib`).
 - `service/ml_api.py` — FastAPI service exposing `/predict/*` endpoints.
 
+## Delay risk model (v2)
+
+`src/models/delay_risk.py` predicts P(trip delayed), where "delayed" is the real
+business outcome (`status == "Delayed"`, i.e. `delay_minutes > 90`) — not a
+self-constructed proxy. See `pipeline_documentation_v2.json` for full performance
+notes (genuine 0.65-0.73 AUC, no leaked/dominant feature) and `feature_contract_v2.json`
+for the exact 25-field input schema, categorical vocabularies, and boolean fields
+that `/predict/delay` and `delay_risk.predict()` expect.
+
+The shipped artifact (`models_store/delay_risk_xgboost_v2.pkl`) was trained
+externally on `data/raw/master_trips_phase5.csv` (1298 trips); `data/processed/train_v2.csv`
+/ `test_v2.csv` are the exact split used to report `test_auc`. To retrain from
+scratch: `python src/train.py --model delay --input data/raw/master_trips_phase5.csv`.
+
 ## Running locally
 
 ```bash

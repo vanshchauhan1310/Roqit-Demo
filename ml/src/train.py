@@ -2,10 +2,11 @@ import argparse
 
 import pandas as pd
 
-from src.models import eta_prediction
+from src.models import delay_risk, eta_prediction
 
 MODEL_TRAINERS = {
     "eta": eta_prediction.train,
+    "delay": delay_risk.train,
 }
 
 
