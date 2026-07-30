@@ -3,10 +3,10 @@ from datetime import date, datetime
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models.driver_master import DriverMaster
+from app.models.driver import Driver
 from app.models.realtime_fleet_status import RealtimeFleetStatus
 from app.models.trip import Trip
-from app.models.vehicle_master import VehicleMaster
+from app.models.vehicle import Vehicle
 from app.schemas.roster import DriverRosterItem, VehicleRosterItem
 
 # Service-due-soon threshold: flagged once the vehicle is within this many km of its next service.
@@ -46,7 +46,7 @@ def get_driver_roster(db: Session) -> list[DriverRosterItem]:
         .all()
     }
 
-    drivers = db.query(DriverMaster).order_by(DriverMaster.driver_name).all()
+    drivers = db.query(Driver).order_by(Driver.driver_name).all()
 
     return [
         DriverRosterItem(
@@ -68,7 +68,7 @@ def get_driver_roster(db: Session) -> list[DriverRosterItem]:
 
 def get_vehicle_roster(db: Session) -> list[VehicleRosterItem]:
     realtime_by_vehicle = {r.vehicle_id: r for r in db.query(RealtimeFleetStatus).all()}
-    vehicles = db.query(VehicleMaster).order_by(VehicleMaster.vehicle_id).all()
+    vehicles = db.query(Vehicle).order_by(Vehicle.vehicle_id).all()
 
     result = []
     for v in vehicles:

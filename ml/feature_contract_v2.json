@@ -1,0 +1,94 @@
+{
+  "feature_order": [
+    "vehicle_type",
+    "gps_start_lat",
+    "gps_start_lon",
+    "gps_end_lat",
+    "gps_end_lon",
+    "planned_distance_km",
+    "weather_condition",
+    "road_type",
+    "traffic_density",
+    "fuel_price_per_l",
+    "planned_duration_hours",
+    "planned_avg_speed_kmph",
+    "driver_trip_count_to_date",
+    "driver_delay_rate_to_date",
+    "vehicle_delay_rate_to_date",
+    "route_trip_count_to_date",
+    "route_delay_rate_to_date",
+    "has_route_history",
+    "license_type",
+    "experience_years",
+    "rating",
+    "driver_base_location",
+    "fuel_type",
+    "load_capacity_kg",
+    "vehicle_age_years"
+  ],
+  "categorical_features": [
+    "vehicle_type",
+    "weather_condition",
+    "road_type",
+    "traffic_density",
+    "license_type",
+    "driver_base_location",
+    "fuel_type"
+  ],
+  "categorical_vocabulary": {
+    "vehicle_type": [
+      "Container Truck",
+      "Mini Truck",
+      "Refrigerated Truck",
+      "Trailer",
+      "Truck"
+    ],
+    "weather_condition": [
+      "Clear",
+      "Extreme Heat",
+      "Fog",
+      "Rain",
+      "Storm"
+    ],
+    "road_type": [
+      "City Road",
+      "Highway",
+      "Rural Road",
+      "State Road"
+    ],
+    "traffic_density": [
+      "High",
+      "Low",
+      "Medium",
+      "Severe"
+    ],
+    "license_type": [
+      "HMV",
+      "HMV-Hazmat",
+      "HMV-Trailer",
+      "LMV"
+    ],
+    "driver_base_location": [
+      "Ahmedabad",
+      "Bangalore",
+      "Coimbatore",
+      "Delhi",
+      "Indore",
+      "Jaipur",
+      "Kolkata",
+      "Mumbai",
+      "Nagpur",
+      "Pune",
+      "Surat",
+      "Vijayawada",
+      "Visakhapatnam"
+    ],
+    "fuel_type": [
+      "CNG",
+      "Diesel"
+    ]
+  },
+  "boolean_features": [
+    "has_route_history"
+  ]
+}

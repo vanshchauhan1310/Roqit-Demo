@@ -1,21 +1,20 @@
-import uuid
-
-from sqlalchemy import String, DateTime, Float, ForeignKey, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import String, Float, BigInteger, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
-
+# Maps onto the real Supabase `maintance_event` table (typo preserved -
+# that's the actual table name in production).
 class MaintenanceEvent(Base):
-    __tablename__ = "maintenance_events"
+    __tablename__ = "maintance_event"
 
-    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    vehicle_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("vehicles.vehicle_id"), nullable=False)
-    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    description: Mapped[str | None] = mapped_column(String(255))
+    event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    vehicle_id: Mapped[str | None] = mapped_column(String, ForeignKey("vehicle_master.vehicle_id"))
+    event_date: Mapped[str | None] = mapped_column(String)
+    maintenance_type: Mapped[str | None] = mapped_column(String)
+    description: Mapped[str | None] = mapped_column(String)
+    downtime_hours: Mapped[float | None] = mapped_column(Float)
     cost: Mapped[float | None] = mapped_column(Float)
-    performed_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    odometer_at_service: Mapped[int | None] = mapped_column(BigInteger)
 
-    vehicle: Mapped["Vehicle"] = relationship(back_populates="maintenance_events")
+    vehicle: Mapped["Vehicle"] = relationship()

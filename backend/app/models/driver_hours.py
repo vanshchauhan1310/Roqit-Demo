@@ -1,20 +1,18 @@
-import uuid
-
-from sqlalchemy import DateTime, Float, ForeignKey, func
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import String, Boolean, Float, BigInteger
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-
+# Maps onto the real Supabase `driver_hours` table: a daily fleet-wide
+# aggregate (no vehicle_id/trip_id grain - see ml training notebook Phase 1).
+# No FK constraint exists on driver_id at the DB level either.
 class DriverHours(Base):
     __tablename__ = "driver_hours"
 
-    record_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    driver_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("drivers.driver_id"), nullable=False)
-    shift_start: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
-    shift_end: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    driver_id: Mapped[str | None] = mapped_column(String)
+    date: Mapped[str | None] = mapped_column(String)
+    trips_count: Mapped[int | None] = mapped_column(BigInteger)
     hours_driven: Mapped[float | None] = mapped_column(Float)
-    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-    driver: Mapped["Driver"] = relationship(back_populates="driver_hours")
+    rest_hours: Mapped[float | None] = mapped_column(Float)
+    hos_compliant: Mapped[bool | None] = mapped_column(Boolean)

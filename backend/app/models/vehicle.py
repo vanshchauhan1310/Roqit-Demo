@@ -1,21 +1,39 @@
-import uuid
+from datetime import date
 
-from sqlalchemy import String, DateTime, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import String, Float, BigInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
-
+# Maps onto the real Supabase `vehicle_master` table.
 class Vehicle(Base):
-    __tablename__ = "vehicles"
+    __tablename__ = "vehicle_master"
 
-    vehicle_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    license_plate: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
-    make: Mapped[str | None] = mapped_column(String(50))
-    model: Mapped[str | None] = mapped_column(String(50))
-    year: Mapped[int | None] = mapped_column()
-    status: Mapped[str] = mapped_column(String(20), default="active")
-    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    vehicle_id: Mapped[str] = mapped_column(String, primary_key=True)
+    vehicle_type: Mapped[str | None] = mapped_column(String)
+    make: Mapped[str | None] = mapped_column(String)
+    model: Mapped[str | None] = mapped_column(String)
+    year: Mapped[int | None] = mapped_column(BigInteger)
+    purchase_date: Mapped[str | None] = mapped_column(String)
+    fuel_type: Mapped[str | None] = mapped_column(String)
+    tank_capacity_l: Mapped[int | None] = mapped_column(BigInteger)
+    load_capacity_kg: Mapped[int | None] = mapped_column(BigInteger)
+    odometer_km: Mapped[int | None] = mapped_column(BigInteger)
+    avg_kmpl_rated: Mapped[float | None] = mapped_column(Float)
+    base_location: Mapped[str | None] = mapped_column(String)
+    last_service_date: Mapped[str | None] = mapped_column(String)
+    next_service_due_km: Mapped[int | None] = mapped_column(BigInteger)
+    insurance_expiry: Mapped[str | None] = mapped_column(String)
+    registration_expiry: Mapped[str | None] = mapped_column(String)
+    gps_device_id: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str | None] = mapped_column(String)
 
-    maintenance_events: Mapped[list["MaintenanceEvent"]] = relationship(back_populates="vehicle")
+    trips: Mapped[list["Trip"]] = relationship(back_populates="vehicle")
+
+    @property
+    def vehicle_age_years(self) -> float | None:
+        """Not a stored column - the training data derives it as
+        current_year - year (verified empirically against train_v2.csv)."""
+        if self.year is None:
+            return None
+        return float(date.today().year - self.year)

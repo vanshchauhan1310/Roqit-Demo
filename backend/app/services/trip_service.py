@@ -2,11 +2,13 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models.realtime_fleet_status import RealtimeFleetStatus
 from app.models.route import Route, RouteStop
 from app.models.trip import Trip
-from app.schemas.trip import TripCreate, TripFilterOptions
+from app.schemas.trip import TripCreate, TripFilterOptions, TripOutcomeUpdate
 
 # Demo-only: there's no live telemetry feed wired in yet, so every trip gets a deterministic
 # "actual" outcome derived from its planned values instead of leaving them NULL forever.
@@ -17,6 +19,10 @@ DEMO_ACTUAL_DELIVERY_OFFSET_MINUTES = 45
 # Statuses this lazy transition is allowed to touch — never overrides a manually-set
 # Delayed/Cancelled/Delivered status.
 _AUTO_TRANSITION_STATUSES = {"scheduled", "in-transit"}
+
+
+class DuplicateIdError(ValueError):
+    pass
 
 
 def _apply_auto_status_transition(trip: Trip, now: datetime) -> bool:
@@ -57,7 +63,11 @@ def create_trip(db: Session, trip_in: TripCreate) -> Trip:
 
     trip = Trip(trip_id=_generate_trip_id(), status="scheduled", **trip_data)
     db.add(trip)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise DuplicateIdError(f"Trip {trip.trip_id} already exists") from exc
     db.refresh(trip)
     return trip
 
@@ -160,3 +170,31 @@ def update_trip_status(db: Session, trip: Trip, status: str) -> Trip:
     db.commit()
     db.refresh(trip)
     return trip
+
+
+def complete_trip(db: Session, trip: Trip, outcome_in: TripOutcomeUpdate) -> Trip:
+    """Records the real outcome once a trip finishes. status ("Delivered" or
+    "Delayed") is what future driver/vehicle/route delay-rate history features
+    are computed from - without it, delay_prediction_service's rolling stats
+    stay empty for this trip."""
+    trip.status = outcome_in.status
+    trip.delay_minutes = outcome_in.delay_minutes
+    trip.actual_delivery_time = outcome_in.actual_delivery_time or datetime.utcnow()
+    db.add(trip)
+    db.commit()
+    db.refresh(trip)
+    return trip
+
+
+def get_latest_trip_by_gps_activity(db: Session) -> Trip | None:
+    """The vehicle whose telemetry most recently updated - i.e. the entry
+    point of the New GPS Data -> Supabase -> Fetch Latest Trip pipeline step."""
+    latest_status = (
+        db.query(RealtimeFleetStatus)
+        .filter(RealtimeFleetStatus.current_trip_id.isnot(None))
+        .order_by(RealtimeFleetStatus.last_updated.desc())
+        .first()
+    )
+    if latest_status is None:
+        return None
+    return db.get(Trip, latest_status.current_trip_id)

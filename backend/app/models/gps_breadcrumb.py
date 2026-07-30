@@ -1,20 +1,20 @@
-import uuid
-
-from sqlalchemy import DateTime, Float, ForeignKey, String, func
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import String, DateTime, Float, BigInteger, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
-
+# Maps onto the real Supabase `gps_breadcrumb` table (singular - not our
+# earlier scaffold's `gps_breadcrumbs`).
 class GpsBreadcrumb(Base):
-    __tablename__ = "gps_breadcrumbs"
+    __tablename__ = "gps_breadcrumb"
 
-    breadcrumb_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     trip_id: Mapped[str] = mapped_column(String, ForeignKey("trips.trip_id"), nullable=False)
-    vehicle_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vehicles.vehicle_id"))
-    latitude: Mapped[float] = mapped_column(Float, nullable=False)
-    longitude: Mapped[float] = mapped_column(Float, nullable=False)
-    speed: Mapped[float | None] = mapped_column(Float)
-    heading: Mapped[float | None] = mapped_column(Float)
-    recorded_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    vehicle_id: Mapped[str | None] = mapped_column(String, ForeignKey("vehicle_master.vehicle_id"))
+    timestamp: Mapped[DateTime] = mapped_column(DateTime, nullable=False)
+    lat: Mapped[float | None] = mapped_column(Float)
+    lon: Mapped[float | None] = mapped_column(Float)
+    speed_kmph: Mapped[float | None] = mapped_column(Float)
+    heading_deg: Mapped[int | None] = mapped_column(BigInteger)
+
+    trip: Mapped["Trip"] = relationship(back_populates="gps_breadcrumbs")

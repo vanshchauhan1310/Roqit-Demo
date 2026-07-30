@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -12,7 +13,11 @@ router = APIRouter(prefix="/drivers", tags=["drivers"])
 def create_driver(driver_in: DriverCreate, db: Session = Depends(get_db)):
     driver = Driver(**driver_in.model_dump())
     db.add(driver)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"Driver {driver_in.driver_id} already exists")
     db.refresh(driver)
     return driver
 
