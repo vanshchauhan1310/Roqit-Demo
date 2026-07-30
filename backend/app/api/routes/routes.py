@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.schemas.route import RouteCreate, RouteRead, RouteUpdateStatus
+from app.schemas.optimize import OptimizeRouteRequest, OptimizeRouteResponse
+from app.schemas.route import RouteAssignTrip, RouteCreate, RouteRead, RouteStopCreate, RouteStopRead, RouteUpdateStatus
 from app.services import route_service
+from app.services.route_optimizer import optimize_route
 
 router = APIRouter(prefix="/routes", tags=["routes"])
 
@@ -18,6 +20,11 @@ def create_route(route_in: RouteCreate, db: Session = Depends(get_db)):
 @router.get("", response_model=list[RouteRead])
 def list_routes(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return route_service.list_routes(db, skip, limit)
+
+
+@router.post("/optimize", response_model=OptimizeRouteResponse)
+async def optimize(request: OptimizeRouteRequest):
+    return await optimize_route(request.stops)
 
 
 @router.get("/{route_id}", response_model=RouteRead)
@@ -34,3 +41,19 @@ def update_route_status(route_id: uuid.UUID, status_in: RouteUpdateStatus, db: S
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
     return route_service.update_route_status(db, route, status_in.status)
+
+
+@router.patch("/{route_id}/trip", response_model=RouteRead)
+def assign_trip(route_id: uuid.UUID, assign_in: RouteAssignTrip, db: Session = Depends(get_db)):
+    route = route_service.get_route(db, route_id)
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+    return route_service.assign_trip(db, route, assign_in.trip_id)
+
+
+@router.post("/{route_id}/stops", response_model=RouteStopRead, status_code=201)
+def add_stop(route_id: uuid.UUID, stop_in: RouteStopCreate, db: Session = Depends(get_db)):
+    route = route_service.get_route(db, route_id)
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+    return route_service.add_stop_to_route(db, route, stop_in)

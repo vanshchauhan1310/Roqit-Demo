@@ -1,8 +1,22 @@
 import { apiClient } from "./client";
-import type { CreateTripPayload, Trip } from "@/types/trip";
+import type { CreateTripPayload, Trip, TripFilterOptions, TripFilters } from "@/types/trip";
 
-export async function fetchTrips(): Promise<Trip[]> {
-  const { data } = await apiClient.get<Trip[]>("/trips");
+export async function fetchTrips(skip = 0, limit = 100, filters: TripFilters = {}): Promise<Trip[]> {
+  const { data } = await apiClient.get<Trip[]>("/trips", {
+    params: {
+      skip,
+      limit,
+      search: filters.search || undefined,
+      status: filters.status || undefined,
+      driver: filters.driver || undefined,
+      pickup_date: filters.pickupDate || undefined,
+    },
+  });
+  return data;
+}
+
+export async function fetchTripFilterOptions(): Promise<TripFilterOptions> {
+  const { data } = await apiClient.get<TripFilterOptions>("/trips/filter-options");
   return data;
 }
 

@@ -5,11 +5,14 @@ from pydantic import BaseModel, ConfigDict
 
 
 class RouteStopBase(BaseModel):
-    sequence: int
+    sequence: int | None = None
     address: str | None = None
     latitude: float | None = None
     longitude: float | None = None
     eta: datetime | None = None
+    stop_type: str = "waypoint"
+    window_start: datetime | None = None
+    window_end: datetime | None = None
 
 
 class RouteStopCreate(RouteStopBase):
@@ -24,7 +27,7 @@ class RouteStopRead(RouteStopBase):
 
 
 class RouteBase(BaseModel):
-    trip_id: uuid.UUID | None = None
+    trip_id: str | None = None
     name: str | None = None
 
 
@@ -34,6 +37,10 @@ class RouteCreate(RouteBase):
 
 class RouteUpdateStatus(BaseModel):
     status: str
+
+
+class RouteAssignTrip(BaseModel):
+    trip_id: str
 
 
 class RouteRead(RouteBase):

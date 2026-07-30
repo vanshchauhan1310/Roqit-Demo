@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import trips, routes, vehicles, drivers, realtime, reports
+from app.api.routes import trips, routes, vehicles, drivers, realtime, reports, geocode, roster
 from app.core.config import settings
 
 app = FastAPI(title="Fleet Optimization Platform API")
@@ -26,3 +26,5 @@ app.include_router(vehicles.router, prefix="/api")
 app.include_router(drivers.router, prefix="/api")
 app.include_router(realtime.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
+app.include_router(geocode.router, prefix="/api")
+app.include_router(roster.router, prefix="/api")

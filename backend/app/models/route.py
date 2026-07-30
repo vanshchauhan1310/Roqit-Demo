@@ -11,12 +11,11 @@ class Route(Base):
     __tablename__ = "routes"
 
     route_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    trip_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("trips.trip_id"))
+    trip_id: Mapped[str | None] = mapped_column(String, ForeignKey("trips.trip_id"))
     name: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), default="planned")
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    trip: Mapped["Trip"] = relationship(back_populates="routes")
     stops: Mapped[list["RouteStop"]] = relationship(back_populates="route", order_by="RouteStop.sequence")
 
 
@@ -31,5 +30,8 @@ class RouteStop(Base):
     longitude: Mapped[float | None] = mapped_column(Float)
     eta: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(20), default="pending")
+    stop_type: Mapped[str] = mapped_column(String(20), default="waypoint")
+    window_start: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
 
     route: Mapped["Route"] = relationship(back_populates="stops")

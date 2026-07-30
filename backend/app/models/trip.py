@@ -1,8 +1,4 @@
-import uuid
-
-from sqlalchemy import String, DateTime, ForeignKey, func
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import BigInteger, Column, DateTime, Float, String
 
 from app.db.base import Base
 
@@ -10,20 +6,50 @@ from app.db.base import Base
 class Trip(Base):
     __tablename__ = "trips"
 
-    trip_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    vehicle_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("vehicles.vehicle_id"))
-    driver_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("drivers.driver_id"))
-    origin: Mapped[str | None] = mapped_column(String(255))
-    destination: Mapped[str | None] = mapped_column(String(255))
-    status: Mapped[str] = mapped_column(String(20), default="scheduled")
-    scheduled_start: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
-    scheduled_end: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
-    actual_start: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
-    actual_end: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    trip_id = Column(String, primary_key=True)
+    driver_id = Column(String, nullable=True)
+    driver_name = Column(String, nullable=True)
+    vehicle_id = Column(String, nullable=True)
+    vehicle_type = Column(String, nullable=True)
 
-    vehicle: Mapped["Vehicle"] = relationship(back_populates="trips")
-    driver: Mapped["Driver"] = relationship(back_populates="trips")
-    routes: Mapped[list["Route"]] = relationship(back_populates="trip")
-    gps_breadcrumbs: Mapped[list["GpsBreadcrumb"]] = relationship(back_populates="trip")
+    origin = Column(String, nullable=True)
+    destination = Column(String, nullable=True)
+
+    gps_start_lat = Column(Float, nullable=True)
+    gps_start_lon = Column(Float, nullable=True)
+    gps_end_lat = Column(Float, nullable=True)
+    gps_end_lon = Column(Float, nullable=True)
+
+    planned_distance_km = Column(Float, nullable=True)
+    actual_distance_km = Column(Float, nullable=True)
+
+    pickup_time = Column(DateTime(timezone=True), nullable=True)
+    planned_delivery_time = Column(DateTime(timezone=True), nullable=True)
+    actual_delivery_time = Column(DateTime(timezone=True), nullable=True)
+
+    delay_minutes = Column(BigInteger, nullable=True)
+    status = Column(String, nullable=True)
+
+    weather_condition = Column(String, nullable=True)
+    road_type = Column(String, nullable=True)
+    traffic_density = Column(String, nullable=True)
+
+    odometer_start = Column(BigInteger, nullable=True)
+    odometer_end = Column(BigInteger, nullable=True)
+
+    fuel_consumed_l = Column(Float, nullable=True)
+    fuel_price_per_l = Column(Float, nullable=True)
+    fuel_cost = Column(Float, nullable=True)
+    driver_pay = Column(Float, nullable=True)
+    maintenance_cost = Column(Float, nullable=True)
+    toll_cost = Column(Float, nullable=True)
+
+    idle_time_min = Column(BigInteger, nullable=True)
+    load_weight_kg = Column(BigInteger, nullable=True)
+    load_value = Column(Float, nullable=True)
+    profit_margin = Column(Float, nullable=True)
+
+    violation_count = Column(BigInteger, nullable=True)
+    speeding_incidents = Column(BigInteger, nullable=True)
+    harsh_braking_count = Column(BigInteger, nullable=True)
+    harsh_accel_count = Column(BigInteger, nullable=True)

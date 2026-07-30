@@ -1,32 +1,84 @@
-import uuid
+# backend/app/schemas/trip.py
+from pydantic import BaseModel
+from typing import Optional
 from datetime import datetime
-
-from pydantic import BaseModel, ConfigDict
 
 
 class TripBase(BaseModel):
-    vehicle_id: uuid.UUID | None = None
-    driver_id: uuid.UUID | None = None
-    origin: str | None = None
-    destination: str | None = None
-    scheduled_start: datetime | None = None
-    scheduled_end: datetime | None = None
+    trip_id: str
+    driver_id: Optional[str] = None
+    driver_name: Optional[str] = None
+    vehicle_id: Optional[str] = None
+    vehicle_type: Optional[str] = None
+    origin: Optional[str] = None
+    destination: Optional[str] = None
+    gps_start_lat: Optional[float] = None
+    gps_start_lon: Optional[float] = None
+    gps_end_lat: Optional[float] = None
+    gps_end_lon: Optional[float] = None
+    planned_distance_km: Optional[float] = None
+    actual_distance_km: Optional[float] = None
+    pickup_time: Optional[datetime] = None
+    planned_delivery_time: Optional[datetime] = None
+    actual_delivery_time: Optional[datetime] = None  
+    delay_minutes: Optional[int] = None
+    status: Optional[str] = None
+    weather_condition: Optional[str] = None
+    road_type: Optional[str] = None
+    traffic_density: Optional[str] = None
+    odometer_start: Optional[int] = None
+    odometer_end: Optional[int] = None
+    fuel_consumed_l: Optional[float] = None
+    fuel_price_per_l: Optional[float] = None
+    fuel_cost: Optional[float] = None
+    driver_pay: Optional[float] = None
+    maintenance_cost: Optional[float] = None
+    toll_cost: Optional[float] = None
+    idle_time_min: Optional[int] = None
+    load_weight_kg: Optional[int] = None
+    load_value: Optional[float] = None
+    profit_margin: Optional[float] = None
+    violation_count: Optional[int] = None
+    speeding_incidents: Optional[int] = None
+    harsh_braking_count: Optional[int] = None
+    harsh_accel_count: Optional[int] = None
+    stop_count: int = 0
+
+    class Config:
+        from_attributes = True
 
 
-class TripCreate(TripBase):
+class TripResponse(TripBase):
     pass
+
+
+# Alias kept for the route/service layer, which was written against this name.
+TripRead = TripResponse
 
 
 class TripUpdateStatus(BaseModel):
     status: str
 
 
-class TripRead(TripBase):
-    model_config = ConfigDict(from_attributes=True)
+class TripFilterOptions(BaseModel):
+    statuses: list[str]
+    drivers: list[str]
 
-    trip_id: uuid.UUID
-    status: str
-    actual_start: datetime | None = None
-    actual_end: datetime | None = None
-    created_at: datetime
-    updated_at: datetime
+
+class TripCreate(BaseModel):
+    """Schema for creating a new trip — only fields the user actually provides."""
+    driver_id: str
+    driver_name: Optional[str] = None
+    vehicle_id: str
+    vehicle_type: Optional[str] = None
+    origin: str
+    destination: str
+    gps_start_lat: Optional[float] = None
+    gps_start_lon: Optional[float] = None
+    gps_end_lat: Optional[float] = None
+    gps_end_lon: Optional[float] = None
+    planned_distance_km: Optional[float] = None
+    pickup_time: datetime
+    planned_delivery_time: Optional[datetime] = None
+    load_weight_kg: Optional[int] = None
+    load_value: Optional[float] = None

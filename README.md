@@ -3,21 +3,25 @@
 A full-stack platform for fleet trip planning and optimization. Three independently deployable parts — `frontend`, `backend`, `ml` — that work together over HTTP.
 
 - **frontend/** — React + TypeScript + Vite, TailwindCSS, React Query, React Router, Recharts, Leaflet.
-- **backend/** — FastAPI + SQLAlchemy + Alembic, backed by PostgreSQL.
+- **backend/** — FastAPI + SQLAlchemy + Alembic, backed by PostgreSQL (hosted on [Supabase](https://supabase.com)).
 - **ml/** — Standalone Python service (scikit-learn/XGBoost) exposing `/predict/*` endpoints, called by the backend over HTTP so it can scale/deploy separately.
 
 The **Trip module** is the first fully-built vertical slice: trip CRUD, a trip list page, and a 5-tab trip detail page (Route Intelligence, Vehicle Intelligence, Driver Intelligence, Real-Time Operations, Reporting & KPI). Vehicles and Drivers reuse the same backend models/tables; their own dedicated frontend pages come later.
 
+## Database
+
+This project uses [Supabase](https://supabase.com) (hosted Postgres) instead of a local Postgres container. Create a Supabase project, grab the connection string from **Project Settings > Database > Connection string (URI)**, and put it in `backend/.env` as `DATABASE_URL` (see `backend/.env.example` for the exact format — note the `postgresql+psycopg2://` scheme and `?sslmode=require`).
+
 ## Run everything with Docker
 
 ```bash
+cp backend/.env.example backend/.env   # fill in your Supabase DATABASE_URL
 docker-compose up --build
 ```
 
 - Frontend: http://localhost:5173
 - Backend: http://localhost:8000 (docs at /docs, health at /health)
 - ML service: http://localhost:8001 (health at /health)
-- Postgres: localhost:5432 (user/pass/db: `fleet`/`fleet`/`fleet_db`)
 
 ## Run each part locally (without Docker)
 
@@ -27,7 +31,7 @@ docker-compose up --build
 cd backend
 python -m venv .venv && source .venv/bin/activate   # .venv\Scripts\activate on Windows
 pip install -r requirements.txt
-cp .env.example .env   # point DATABASE_URL at a local Postgres instance
+cp .env.example .env   # fill in your Supabase DATABASE_URL
 alembic upgrade head    # once migrations exist
 uvicorn app.main:app --reload --port 8000
 ```

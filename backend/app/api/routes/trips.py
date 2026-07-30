@@ -1,10 +1,10 @@
-import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.schemas.trip import TripCreate, TripRead, TripUpdateStatus
+from app.schemas.trip import TripCreate, TripFilterOptions, TripRead, TripUpdateStatus
 from app.services import trip_service
 
 router = APIRouter(prefix="/trips", tags=["trips"])
@@ -16,12 +16,25 @@ def create_trip(trip_in: TripCreate, db: Session = Depends(get_db)):
 
 
 @router.get("", response_model=list[TripRead])
-def list_trips(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return trip_service.list_trips(db, skip, limit)
+def list_trips(
+    skip: int = 0,
+    limit: int = 100,
+    search: str | None = None,
+    status: str | None = None,
+    driver: str | None = None,
+    pickup_date: date | None = None,
+    db: Session = Depends(get_db),
+):
+    return trip_service.list_trips(db, skip, limit, search, status, driver, pickup_date)
+
+
+@router.get("/filter-options", response_model=TripFilterOptions)
+def get_filter_options(db: Session = Depends(get_db)):
+    return trip_service.get_filter_options(db)
 
 
 @router.get("/{trip_id}", response_model=TripRead)
-def get_trip(trip_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_trip(trip_id: str, db: Session = Depends(get_db)):
     trip = trip_service.get_trip(db, trip_id)
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
@@ -29,7 +42,7 @@ def get_trip(trip_id: uuid.UUID, db: Session = Depends(get_db)):
 
 
 @router.patch("/{trip_id}/status", response_model=TripRead)
-def update_trip_status(trip_id: uuid.UUID, status_in: TripUpdateStatus, db: Session = Depends(get_db)):
+def update_trip_status(trip_id: str, status_in: TripUpdateStatus, db: Session = Depends(get_db)):
     trip = trip_service.get_trip(db, trip_id)
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")

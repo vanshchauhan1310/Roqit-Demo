@@ -18,5 +18,4 @@ class Driver(Base):
     status: Mapped[str] = mapped_column(String(20), default="active")
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    trips: Mapped[list["Trip"]] = relationship(back_populates="driver")
     driver_hours: Mapped[list["DriverHours"]] = relationship(back_populates="driver")
