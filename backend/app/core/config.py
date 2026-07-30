@@ -18,5 +18,9 @@ class Settings(BaseSettings):
     # real route geometry (frontend) and the duration/distance matrix (route optimizer).
     OSRM_BASE_URL: str = "https://router.project-osrm.org"
 
+    # OpenWeather — requires a free API key from https://openweathermap.org/api.
+    OPENWEATHER_API_KEY: str = ""
+    OPENWEATHER_BASE_URL: str = "https://api.openweathermap.org/data/2.5/weather"
+
 
 settings = Settings()

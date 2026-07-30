@@ -3,6 +3,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.weather_eta import WeatherEtaEstimate
+
 
 class RouteStopBase(BaseModel):
     sequence: int | None = None
@@ -24,6 +26,11 @@ class RouteStopRead(RouteStopBase):
 
     stop_id: uuid.UUID
     status: str
+
+    weather_condition: str | None = None
+    weather_description: str | None = None
+    temperature_c: float | None = None
+    wind_speed_ms: float | None = None
 
 
 class RouteBase(BaseModel):
@@ -50,3 +57,4 @@ class RouteRead(RouteBase):
     status: str
     created_at: datetime
     stops: list[RouteStopRead] = []
+    weather_eta: WeatherEtaEstimate | None = None
