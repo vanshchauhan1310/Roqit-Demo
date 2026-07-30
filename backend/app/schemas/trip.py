@@ -1,7 +1,7 @@
-# backend/app/schemas/trip.py
-from pydantic import BaseModel
-from typing import Optional
 from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict
 
 
 class TripBase(BaseModel):
@@ -20,9 +20,10 @@ class TripBase(BaseModel):
     actual_distance_km: Optional[float] = None
     pickup_time: Optional[datetime] = None
     planned_delivery_time: Optional[datetime] = None
-    actual_delivery_time: Optional[datetime] = None  
+    actual_delivery_time: Optional[datetime] = None
     delay_minutes: Optional[int] = None
     status: Optional[str] = None
+    is_delayed: Optional[bool] = None
     weather_condition: Optional[str] = None
     road_type: Optional[str] = None
     traffic_density: Optional[str] = None
@@ -44,8 +45,7 @@ class TripBase(BaseModel):
     harsh_accel_count: Optional[int] = None
     stop_count: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TripResponse(TripBase):
@@ -58,6 +58,16 @@ TripRead = TripResponse
 
 class TripUpdateStatus(BaseModel):
     status: str
+
+
+class TripOutcomeUpdate(BaseModel):
+    """Records the real outcome once a trip finishes - status drives is_delayed
+    (status == "Delayed"), which future driver/vehicle/route history features
+    are computed from."""
+
+    status: str  # "Delivered" or "Delayed"
+    delay_minutes: Optional[int] = None
+    actual_delivery_time: Optional[datetime] = None
 
 
 class TripFilterOptions(BaseModel):

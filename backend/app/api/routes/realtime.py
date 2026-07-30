@@ -12,7 +12,7 @@ def get_trip_breadcrumbs(trip_id: str, db: Session = Depends(get_db)):
     breadcrumbs = (
         db.query(GpsBreadcrumb)
         .filter(GpsBreadcrumb.trip_id == trip_id)
-        .order_by(GpsBreadcrumb.recorded_at.desc())
+        .order_by(GpsBreadcrumb.timestamp.desc())
         .limit(500)
         .all()
     )

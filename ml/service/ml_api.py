@@ -1,7 +1,9 @@
+from typing import Literal
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from src.models import eta_prediction
+from src.models import delay_risk, eta_prediction
 
 app = FastAPI(title="Fleet Optimization ML Service")
 
@@ -18,6 +20,44 @@ class EtaPredictionResponse(BaseModel):
     predicted_duration_minutes: float
 
 
+# Field order/types/categories mirror ml/feature_contract_v2.json exactly -
+# keep the two in sync if the delay model is retrained on a new contract.
+class DelayPredictionRequest(BaseModel):
+    vehicle_type: Literal["Container Truck", "Mini Truck", "Refrigerated Truck", "Trailer", "Truck"]
+    gps_start_lat: float
+    gps_start_lon: float
+    gps_end_lat: float
+    gps_end_lon: float
+    planned_distance_km: float
+    weather_condition: Literal["Clear", "Extreme Heat", "Fog", "Rain", "Storm"]
+    road_type: Literal["City Road", "Highway", "Rural Road", "State Road"]
+    traffic_density: Literal["High", "Low", "Medium", "Severe"]
+    fuel_price_per_l: float
+    planned_duration_hours: float
+    planned_avg_speed_kmph: float
+    driver_trip_count_to_date: int
+    driver_delay_rate_to_date: float
+    vehicle_delay_rate_to_date: float
+    route_trip_count_to_date: int
+    route_delay_rate_to_date: float
+    has_route_history: bool
+    license_type: Literal["HMV", "HMV-Hazmat", "HMV-Trailer", "LMV"]
+    experience_years: float
+    rating: float
+    driver_base_location: Literal[
+        "Ahmedabad", "Bangalore", "Coimbatore", "Delhi", "Indore", "Jaipur",
+        "Kolkata", "Mumbai", "Nagpur", "Pune", "Surat", "Vijayawada", "Visakhapatnam",
+    ]
+    fuel_type: Literal["CNG", "Diesel"]
+    load_capacity_kg: float
+    vehicle_age_years: float
+
+
+class DelayPredictionResponse(BaseModel):
+    delay_probability: float
+    is_delayed_prediction: bool
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -30,3 +70,15 @@ def predict_eta(request: EtaPredictionRequest):
     except FileNotFoundError:
         raise HTTPException(status_code=503, detail="ETA model not trained yet. Run src/train.py --model eta first.")
     return EtaPredictionResponse(predicted_duration_minutes=duration)
+
+
+@app.post("/predict/delay", response_model=DelayPredictionResponse)
+def predict_delay(request: DelayPredictionRequest):
+    try:
+        result = delay_risk.predict(request.model_dump())
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=503,
+            detail="Delay model not found in models_store/. Run src/train.py --model delay first.",
+        )
+    return DelayPredictionResponse(**result)

@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -12,7 +13,11 @@ router = APIRouter(prefix="/vehicles", tags=["vehicles"])
 def create_vehicle(vehicle_in: VehicleCreate, db: Session = Depends(get_db)):
     vehicle = Vehicle(**vehicle_in.model_dump())
     db.add(vehicle)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"Vehicle {vehicle_in.vehicle_id} already exists")
     db.refresh(vehicle)
     return vehicle
 
