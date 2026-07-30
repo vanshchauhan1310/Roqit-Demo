@@ -22,6 +22,42 @@ def load_feature_contract(path: Path = FEATURE_CONTRACT_PATH) -> dict:
         return json.load(f)
 
 
+COST_FEATURE_ORDER = [
+    "vehicle_type",
+    "road_type",
+    "traffic_density",
+    "weather_condition",
+    "fuel_type",
+    "planned_distance_km",
+    "load_weight_kg",
+    "avg_kmpl_rated",
+    "vehicle_age_years",
+    "fuel_price_per_l",
+]
+COST_CATEGORICAL_FEATURES = {"vehicle_type", "road_type", "traffic_density", "weather_condition", "fuel_type"}
+
+
+def build_cost_features(df: pd.DataFrame, contract: dict | None = None) -> pd.DataFrame:
+    """Turns raw trip/vehicle rows into the 10-column frame the fuel-liters and
+    trip-cost XGBRegressors expect. Reuses feature_contract_v2.json's
+    categorical_vocabulary for the 5 categorical columns - same underlying
+    dataset as the delay model, so no separate contract needed."""
+    contract = contract or load_feature_contract()
+    categorical_vocabulary = contract["categorical_vocabulary"]
+
+    features = pd.DataFrame(index=df.index)
+    for col in COST_FEATURE_ORDER:
+        if col not in df.columns:
+            raise KeyError(f"Missing required feature column: {col}")
+
+        if col in COST_CATEGORICAL_FEATURES:
+            features[col] = pd.Categorical(df[col], categories=categorical_vocabulary[col])
+        else:
+            features[col] = pd.to_numeric(df[col])
+
+    return features[COST_FEATURE_ORDER]
+
+
 def build_delay_features(df: pd.DataFrame, contract: dict | None = None) -> pd.DataFrame:
     """Turns raw trip rows into the exact 25-column frame delay_risk's XGBClassifier
     expects, in feature_contract_v2.json's order and dtypes (categorical dtype for
