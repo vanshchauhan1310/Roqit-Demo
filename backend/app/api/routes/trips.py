@@ -19,6 +19,10 @@ async def create_trip(trip_in: TripCreate, db: Session = Depends(get_db)):
         return await trip_service.create_trip(db, trip_in)
     except trip_service.DuplicateIdError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except trip_service.LoadExceedsCapacityError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except trip_service.RouteNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("", response_model=list[TripRead])
@@ -92,11 +96,11 @@ async def get_cost_prediction(trip_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{trip_id}/vehicle-intelligence", response_model=VehicleIntelligenceRead)
-def get_vehicle_intelligence(trip_id: str, db: Session = Depends(get_db)):
+async def get_vehicle_intelligence(trip_id: str, db: Session = Depends(get_db)):
     trip = trip_service.get_trip(db, trip_id)
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
-    result = vehicle_intelligence_service.get_vehicle_intelligence(db, trip)
+    result = await vehicle_intelligence_service.get_vehicle_intelligence(db, trip)
     if result is None:
         raise HTTPException(status_code=422, detail=f"Trip {trip_id} has no assigned vehicle")
     return result

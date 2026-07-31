@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.models.realtime_fleet_status import RealtimeFleetStatus
 from app.models.route import Route, RouteStop
 from app.models.trip import Trip
+from app.models.vehicle import Vehicle
 from app.schemas.trip import TripCreate, TripFilterOptions, TripOutcomeUpdate
 from app.services.weather_client import get_ml_weather_condition
 
@@ -51,6 +52,14 @@ class DuplicateIdError(ValueError):
     pass
 
 
+class LoadExceedsCapacityError(ValueError):
+    pass
+
+
+class RouteNotFoundError(ValueError):
+    pass
+
+
 def _apply_auto_status_transition(trip: Trip, now: datetime) -> bool:
     """Advances Scheduled -> In-Transit -> Delivered based on pickup_time/actual_delivery_time vs now.
 
@@ -79,6 +88,25 @@ def _generate_trip_id() -> str:
 async def create_trip(db: Session, trip_in: TripCreate) -> Trip:
     trip_data = trip_in.model_dump()
 
+    # Popped out here - not a Trip column, and linked to the Trip atomically
+    # below (same commit) instead of via a separate follow-up request, which
+    # used to leave a trip permanently unlinked if that second call ever failed.
+    route_id = trip_data.pop("route_id", None)
+    route = None
+    if route_id:
+        route = db.get(Route, route_id)
+        if route is None:
+            raise RouteNotFoundError(f"Route {route_id} not found")
+
+    vehicle_id = trip_data.get("vehicle_id")
+    load_weight_kg = trip_data.get("load_weight_kg")
+    if vehicle_id and load_weight_kg is not None:
+        vehicle = db.get(Vehicle, vehicle_id)
+        if vehicle and vehicle.load_capacity_kg is not None and load_weight_kg > vehicle.load_capacity_kg:
+            raise LoadExceedsCapacityError(
+                f"Load weight {load_weight_kg} kg exceeds {vehicle_id}'s capacity of {vehicle.load_capacity_kg} kg"
+            )
+
     if trip_data.get("planned_distance_km") is not None:
         trip_data["actual_distance_km"] = round(trip_data["planned_distance_km"] * DEMO_ACTUAL_DISTANCE_FACTOR, 1)
 
@@ -105,6 +133,9 @@ async def create_trip(db: Session, trip_in: TripCreate) -> Trip:
 
     trip = Trip(trip_id=_generate_trip_id(), status="scheduled", **trip_data)
     db.add(trip)
+    if route is not None:
+        route.trip_id = trip.trip_id
+        db.add(route)
     try:
         db.commit()
     except IntegrityError as exc:
