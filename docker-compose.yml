@@ -10,6 +10,7 @@ services:
       BACKEND_CORS_ORIGINS: http://localhost:5173
     volumes:
       - ./backend:/app
+      - ./ml:/ml:ro
 
   ml:
     build: ./ml

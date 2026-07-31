@@ -27,6 +27,13 @@ async def predict_delay_for_trip(trip_id: str, db: Session = Depends(get_db)):
     return await _run_pipeline(db, trip)
 
 
+@router.get("/trips/{trip_id}/latest", response_model=DelayPredictionRead | None)
+def get_latest_delay_prediction(trip_id: str, db: Session = Depends(get_db)):
+    """Read-only - does not call the ML service or store anything. Returns
+    null if no prediction has ever been run for this trip yet."""
+    return delay_prediction_service.get_latest_prediction(db, trip_id)
+
+
 async def _run_pipeline(db: Session, trip):
     try:
         return await delay_prediction_service.predict_delay_for_trip(db, trip)

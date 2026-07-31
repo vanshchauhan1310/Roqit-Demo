@@ -6,17 +6,19 @@ from sqlalchemy.orm import Session
 
 from app.models.delay_prediction import DelayPrediction
 from app.models.trip import RESOLVED_STATUSES, DELAYED_STATUS, Trip
-from app.services import ml_client
+from app.services import ml_client, weather_client
 
 MODEL_VERSION = "delay_risk_xgboost_v2"
 FEATURE_CONTRACT_PATH = Path(__file__).resolve().parents[3] / "ml" / "feature_contract_v2.json"
 
 # Fields with no sane default - if any of these are still None on the
 # trip/vehicle/driver, the record hasn't been fully onboarded yet and we
-# refuse to guess rather than send the model garbage.
+# refuse to guess rather than send the model garbage. weather_condition is
+# NOT here - it's resolved separately (live weather, falling back to this
+# stored value) in engineer_features.
 REQUIRED_TRIP_FIELDS = [
     "vehicle_type", "gps_start_lat", "gps_start_lon", "gps_end_lat", "gps_end_lon",
-    "planned_distance_km", "weather_condition", "road_type", "traffic_density",
+    "planned_distance_km", "road_type", "traffic_density",
     "fuel_price_per_l", "pickup_time", "planned_delivery_time",
 ]
 REQUIRED_VEHICLE_FIELDS = ["fuel_type", "load_capacity_kg", "year"]
@@ -101,10 +103,12 @@ def _check_ranges(features: dict) -> None:
         )
 
 
-def engineer_features(db: Session, trip: Trip) -> dict:
+async def engineer_features(db: Session, trip: Trip) -> dict:
     """Fetch Latest Trip -> Engineer Features: builds the exact 25-field
     payload ml/feature_contract_v2.json / delay_risk.predict() expects, from
-    the real Supabase trips/driver_master/vehicle_master tables."""
+    the real Supabase trips/driver_master/vehicle_master tables. weather_condition
+    is live (OpenWeather at the trip's start coordinates, mapped onto the trained
+    vocabulary), falling back to the trip's stored value if the live lookup fails."""
     contract = _load_feature_contract()
     vocabulary = contract["categorical_vocabulary"]
 
@@ -122,6 +126,14 @@ def engineer_features(db: Session, trip: Trip) -> dict:
     if missing:
         raise MissingFeatureDataError(
             f"Trip {trip.trip_id} is missing required fields for delay prediction: {missing}"
+        )
+
+    weather_condition = await weather_client.get_ml_weather_condition(
+        trip.gps_start_lat, trip.gps_start_lon
+    ) or trip.weather_condition
+    if weather_condition is None:
+        raise MissingFeatureDataError(
+            f"Trip {trip.trip_id} has no weather_condition and live weather lookup failed/unavailable"
         )
 
     planned_duration_hours = (trip.planned_delivery_time - trip.pickup_time).total_seconds() / 3600
@@ -156,7 +168,7 @@ def engineer_features(db: Session, trip: Trip) -> dict:
         "gps_end_lat": trip.gps_end_lat,
         "gps_end_lon": trip.gps_end_lon,
         "planned_distance_km": trip.planned_distance_km,
-        "weather_condition": trip.weather_condition,
+        "weather_condition": weather_condition,
         "road_type": trip.road_type,
         "traffic_density": trip.traffic_density,
         "fuel_price_per_l": trip.fuel_price_per_l,
@@ -200,6 +212,18 @@ def store_prediction(db: Session, trip: Trip, features: dict, result: dict) -> D
 
 async def predict_delay_for_trip(db: Session, trip: Trip) -> DelayPrediction:
     """Engineer Features -> Load delay_model.pkl -> Predict -> Store Prediction."""
-    features = engineer_features(db, trip)
+    features = await engineer_features(db, trip)
     result = await ml_client.predict_delay(features)
     return store_prediction(db, trip, features, result)
+
+
+def get_latest_prediction(db: Session, trip_id: str) -> DelayPrediction | None:
+    """Read-only: the most recently stored prediction for this trip, if any.
+    Unlike predict_delay_for_trip, never calls the ML service or writes a new
+    row - safe to call on every page view (e.g. a dashboard header badge)."""
+    return (
+        db.query(DelayPrediction)
+        .filter(DelayPrediction.trip_id == trip_id)
+        .order_by(DelayPrediction.predicted_at.desc())
+        .first()
+    )

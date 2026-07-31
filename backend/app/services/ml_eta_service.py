@@ -12,7 +12,7 @@ async def predict_ml_eta_for_trip(db: Session, trip: Trip) -> MlEtaEstimate:
     validated 25-field payload the delay model uses, then calls the expected-
     delay regression model to get a real ML-predicted delivery time on top of
     the trip's planned duration."""
-    features = delay_prediction_service.engineer_features(db, trip)
+    features = await delay_prediction_service.engineer_features(db, trip)
     result = await ml_client.predict_expected_delay(features)
     expected_delay_minutes = result["expected_delay_minutes"]
 

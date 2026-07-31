@@ -11,6 +11,24 @@ export interface RouteStop {
   stop_type: StopType;
   window_start: string | null;
   window_end: string | null;
+  weather_condition: string | null;
+  weather_description: string | null;
+  temperature_c: number | null;
+  wind_speed_ms: number | null;
+}
+
+export interface WeatherEtaEstimate {
+  route_id: string;
+  origin_latitude: number;
+  origin_longitude: number;
+  weather_condition: string;
+  weather_description: string;
+  temperature_c: number | null;
+  wind_speed_ms: number | null;
+  distance_km: number;
+  base_duration_minutes: number;
+  weather_delay_multiplier: number;
+  adjusted_duration_minutes: number;
 }
 
 export interface Route {
@@ -20,6 +38,7 @@ export interface Route {
   status: string;
   created_at: string;
   stops: RouteStop[];
+  weather_eta: WeatherEtaEstimate | null;
 }
 
 export interface RouteStopInput {

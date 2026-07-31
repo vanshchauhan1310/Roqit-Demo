@@ -7,6 +7,11 @@ export async function fetchRoutes(): Promise<Route[]> {
   return data;
 }
 
+export async function fetchRoutesForTrip(tripId: string): Promise<Route[]> {
+  const { data } = await apiClient.get<Route[]>("/routes", { params: { trip_id: tripId } });
+  return data;
+}
+
 export async function createRoute(payload: CreateRoutePayload): Promise<Route> {
   const { data } = await apiClient.post<Route>("/routes", payload);
   return data;

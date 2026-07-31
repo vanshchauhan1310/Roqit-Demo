@@ -6,7 +6,7 @@ from app.models.trip import Trip
 from app.models.vehicle import Vehicle
 from app.schemas.fuel_cost import FuelCostEstimate
 from app.schemas.trip_cost import TripCostEstimate
-from app.services import ml_client
+from app.services import ml_client, weather_client
 
 
 class InsufficientHistoryError(ValueError):
@@ -23,16 +23,22 @@ class MissingCostInputError(ValueError):
     No heuristic fallback exists for total cost - this one's ML-only."""
 
 
-def _build_cost_payload(trip: Trip, vehicle: Vehicle) -> dict | None:
+async def _build_cost_payload(trip: Trip, vehicle: Vehicle) -> dict | None:
     """The 10-field payload fuel_l_xgboost_v1.pkl and trip_cost_xgboost_v1.pkl
     both expect (see ml/src/features/build_features.py::COST_FEATURE_ORDER).
-    Returns None if any field is missing - callers decide whether to fall
-    back or refuse to predict."""
+    weather_condition is live (OpenWeather at the trip's start coordinates,
+    mapped onto the trained vocabulary), falling back to the trip's stored
+    value if the live lookup fails. Returns None if any field is still
+    missing - callers decide whether to fall back or refuse to predict."""
+    weather_condition = await weather_client.get_ml_weather_condition(
+        trip.gps_start_lat, trip.gps_start_lon
+    ) or trip.weather_condition
+
     payload = {
         "vehicle_type": trip.vehicle_type,
         "road_type": trip.road_type,
         "traffic_density": trip.traffic_density,
-        "weather_condition": trip.weather_condition,
+        "weather_condition": weather_condition,
         "fuel_type": vehicle.fuel_type,
         "planned_distance_km": trip.planned_distance_km,
         "load_weight_kg": trip.load_weight_kg,
@@ -76,7 +82,7 @@ async def estimate_liters(trip: Trip, vehicle: Vehicle) -> tuple[float, str]:
     if trip.fuel_consumed_l is not None:
         return trip.fuel_consumed_l, "actual"
 
-    payload = _build_cost_payload(trip, vehicle)
+    payload = await _build_cost_payload(trip, vehicle)
     if payload is not None:
         try:
             result = await ml_client.predict_fuel_liters(payload)
@@ -128,7 +134,7 @@ async def estimate_fuel_cost_range(db: Session, trip: Trip, vehicle: Vehicle) ->
 
 
 async def estimate_trip_cost(trip: Trip, vehicle: Vehicle) -> TripCostEstimate:
-    payload = _build_cost_payload(trip, vehicle)
+    payload = await _build_cost_payload(trip, vehicle)
     if payload is None:
         raise MissingCostInputError(
             f"Trip {trip.trip_id} is missing one of the fields the trip-cost model needs: "

@@ -22,7 +22,9 @@ async def _enrich_with_weather_eta(db: Session, route: Route) -> RouteRead:
     stops, OPENWEATHER_API_KEY unset, or OSRM/OpenWeather unreachable."""
     route_data = RouteRead.model_validate(route)
     try:
-        estimate, stop_etas, stop_weather = await eta_service.estimate_weather_adjusted_eta(db, route.route_id)
+        estimate, stop_etas, stop_weather, stop_statuses = await eta_service.estimate_weather_adjusted_eta(
+            db, route.route_id
+        )
     except (eta_service.InsufficientRouteDataError, HTTPException):
         return route_data
 
@@ -30,6 +32,8 @@ async def _enrich_with_weather_eta(db: Session, route: Route) -> RouteRead:
     for stop in route_data.stops:
         if stop.stop_id in stop_etas:
             stop.eta = stop_etas[stop.stop_id]
+        if stop.stop_id in stop_statuses:
+            stop.computed_status = stop_statuses[stop.stop_id]
         weather = stop_weather.get(stop.stop_id)
         if weather:
             stop.weather_condition = weather["weather_condition"]
@@ -45,8 +49,8 @@ def create_route(route_in: RouteCreate, db: Session = Depends(get_db)):
 
 
 @router.get("", response_model=list[RouteRead])
-async def list_routes(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    routes = route_service.list_routes(db, skip, limit)
+async def list_routes(skip: int = 0, limit: int = 100, trip_id: str | None = None, db: Session = Depends(get_db)):
+    routes = route_service.list_routes(db, skip, limit, trip_id)
     return await asyncio.gather(*(_enrich_with_weather_eta(db, route) for route in routes))
 
 
@@ -92,7 +96,7 @@ async def get_weather_eta(route_id: uuid.UUID, db: Session = Depends(get_db)):
     """Live weather at the route's origin stop (OpenWeather), used to adjust
     a base ETA (OSRM) up for rain/storm/fog/snow etc."""
     try:
-        estimate, _, _ = await eta_service.estimate_weather_adjusted_eta(db, route_id)
+        estimate, _, _, _ = await eta_service.estimate_weather_adjusted_eta(db, route_id)
         return estimate
     except eta_service.InsufficientRouteDataError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

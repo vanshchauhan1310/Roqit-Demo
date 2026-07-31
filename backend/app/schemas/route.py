@@ -26,6 +26,7 @@ class RouteStopRead(RouteStopBase):
 
     stop_id: uuid.UUID
     status: str
+    computed_status: str | None = None
 
     weather_condition: str | None = None
     weather_description: str | None = None

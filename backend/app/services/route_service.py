@@ -27,8 +27,11 @@ def get_route(db: Session, route_id: uuid.UUID) -> Route | None:
     return db.get(Route, route_id)
 
 
-def list_routes(db: Session, skip: int = 0, limit: int = 100) -> list[Route]:
-    return db.query(Route).order_by(Route.created_at.desc()).offset(skip).limit(limit).all()
+def list_routes(db: Session, skip: int = 0, limit: int = 100, trip_id: str | None = None) -> list[Route]:
+    query = db.query(Route)
+    if trip_id:
+        query = query.filter(Route.trip_id == trip_id)
+    return query.order_by(Route.created_at.desc()).offset(skip).limit(limit).all()
 
 
 def update_route_status(db: Session, route: Route, status: str) -> Route:
