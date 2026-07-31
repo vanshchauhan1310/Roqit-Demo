@@ -83,6 +83,9 @@ class TripCreate(BaseModel):
     vehicle_type: Optional[str] = None
     origin: str
     destination: str
+    # Linked server-side in the same create_trip call (not a separate follow-up
+    # request) so a trip can never end up saved without its route attached.
+    route_id: Optional[str] = None
     gps_start_lat: Optional[float] = None
     gps_start_lon: Optional[float] = None
     gps_end_lat: Optional[float] = None

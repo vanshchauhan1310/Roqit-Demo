@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
+import { isAxiosError } from "axios";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createTrip } from "@/api/trips";
-import { assignRouteToTrip } from "@/api/routes";
 import { useRoutes } from "@/hooks/useRoutes";
 import { useDriverRoster } from "@/hooks/useDriverRoster";
 import { useVehicleRoster } from "@/hooks/useVehicleRoster";
@@ -94,6 +94,8 @@ export function CreateTripModal({ open, onClose, onBuildRoute }: CreateTripModal
         ? new Date(new Date(pickupDateTime).getTime() + durationHours * 3600 * 1000).toISOString()
         : null;
 
+      // route_id is linked server-side in the same request that creates the
+      // trip, so a trip can never end up saved without its route attached.
       const trip = await createTrip({
         driver_id: selectedDriver.driver_id,
         driver_name: selectedDriver.driver_name,
@@ -101,6 +103,7 @@ export function CreateTripModal({ open, onClose, onBuildRoute }: CreateTripModal
         vehicle_type: selectedVehicle.vehicle_type,
         origin,
         destination,
+        route_id: selectedRoute.route_id,
         gps_start_lat: startLat,
         gps_start_lon: startLon,
         gps_end_lat: endLat,
@@ -111,9 +114,6 @@ export function CreateTripModal({ open, onClose, onBuildRoute }: CreateTripModal
         load_weight_kg: loadWeightKg ? Number(loadWeightKg) : null,
         load_value: loadValue ? Number(loadValue) : null,
       });
-
-      // Tie the selected route back to the trip it was actually used for.
-      await assignRouteToTrip(selectedRoute.route_id, trip.trip_id);
 
       return trip;
     },
@@ -138,13 +138,25 @@ export function CreateTripModal({ open, onClose, onBuildRoute }: CreateTripModal
     onClose();
   };
 
+  const loadExceedsCapacity =
+    selectedVehicle?.load_capacity_kg != null &&
+    loadWeightKg.trim() !== "" &&
+    Number(loadWeightKg) > selectedVehicle.load_capacity_kg;
+
   const canContinue = (): boolean => {
     if (step === 0) return Boolean(selectedRoute);
     if (step === 1) return Boolean(selectedDriver);
     if (step === 2) return Boolean(selectedVehicle);
-    if (step === 3) return loadWeightKg.trim() !== "";
+    if (step === 3) return loadWeightKg.trim() !== "" && !loadExceedsCapacity;
     return true;
   };
+
+  const mutationErrorMessage =
+    mutation.isError && isAxiosError(mutation.error) && typeof mutation.error.response?.data?.detail === "string"
+      ? mutation.error.response.data.detail
+      : mutation.isError
+        ? "Something went wrong scheduling this trip. Please try again."
+        : null;
 
   const totalDistanceKm = roadRoute.distanceKm ?? 0;
   const estCost = totalDistanceKm * COST_PER_KM_INR;
@@ -205,6 +217,8 @@ export function CreateTripModal({ open, onClose, onBuildRoute }: CreateTripModal
               onDescriptionChange={setLoadDescription}
               loadValue={loadValue}
               onValueChange={setLoadValue}
+              vehicleCapacityKg={selectedVehicle?.load_capacity_kg ?? null}
+              exceedsCapacity={loadExceedsCapacity}
             />
           )}
           {step === 4 && selectedRoute && selectedDriver && selectedVehicle && (
@@ -221,6 +235,12 @@ export function CreateTripModal({ open, onClose, onBuildRoute }: CreateTripModal
             />
           )}
         </div>
+
+        {mutationErrorMessage && (
+          <div className="mx-6 mb-3 px-4 py-2.5 rounded-lg bg-red-50 border border-red-100 text-sm text-red-700">
+            {mutationErrorMessage}
+          </div>
+        )}
 
         <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100">
           <button
@@ -242,7 +262,7 @@ export function CreateTripModal({ open, onClose, onBuildRoute }: CreateTripModal
           ) : (
             <button
               onClick={() => mutation.mutate()}
-              disabled={mutation.isPending || !pickupDateTime}
+              disabled={mutation.isPending || !pickupDateTime || loadExceedsCapacity}
               className="px-5 py-2 rounded-lg bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 disabled:opacity-50"
             >
               {mutation.isPending ? "Scheduling…" : "Schedule trip"}
@@ -496,6 +516,8 @@ interface LoadStepProps {
   onDescriptionChange: (value: string) => void;
   loadValue: string;
   onValueChange: (value: string) => void;
+  vehicleCapacityKg: number | null;
+  exceedsCapacity: boolean;
 }
 
 function LoadStep({
@@ -505,6 +527,8 @@ function LoadStep({
   onDescriptionChange,
   loadValue,
   onValueChange,
+  vehicleCapacityKg,
+  exceedsCapacity,
 }: LoadStepProps) {
   return (
     <div className="space-y-4">
@@ -516,8 +540,17 @@ function LoadStep({
           value={loadWeightKg}
           onChange={(e) => onWeightChange(e.target.value)}
           placeholder="e.g. 18000"
-          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+          className={`w-full border rounded-lg px-3 py-2 text-sm ${
+            exceedsCapacity ? "border-red-300 focus:outline-red-400" : "border-gray-200"
+          }`}
         />
+        {vehicleCapacityKg != null && (
+          <p className={`text-xs mt-1 ${exceedsCapacity ? "text-red-600" : "text-gray-400"}`}>
+            {exceedsCapacity
+              ? `Exceeds this vehicle's ${vehicleCapacityKg.toLocaleString()} kg capacity — reduce the load or pick a different vehicle.`
+              : `Vehicle capacity: ${vehicleCapacityKg.toLocaleString()} kg`}
+          </p>
+        )}
       </div>
       <div>
         <label className="block text-sm text-gray-600 mb-1">Load description</label>

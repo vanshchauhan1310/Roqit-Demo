@@ -47,6 +47,9 @@ export interface CreateTripPayload {
   vehicle_type?: string | null;
   origin: string;
   destination: string;
+  // Linked server-side in the same create request, so the trip can never be
+  // saved without its route attached.
+  route_id?: string | null;
   gps_start_lat?: number | null;
   gps_start_lon?: number | null;
   gps_end_lat?: number | null;

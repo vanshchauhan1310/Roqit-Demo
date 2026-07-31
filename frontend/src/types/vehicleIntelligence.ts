@@ -17,9 +17,11 @@ export interface LoadCapacity {
 }
 
 export interface FuelEfficiencyComparison {
-  this_trip_kmpl: number | null;
-  rated_kmpl: number | null;
-  fleet_avg_kmpl: number | null;
+  this_trip_fuel_l: number | null;
+  this_trip_fuel_l_is_estimate: boolean;
+  predicted_fuel_l: number | null;
+  rated_fuel_l: number | null;
+  fleet_avg_fuel_l: number | null;
 }
 
 export interface MaintenanceEventItem {
@@ -32,10 +34,13 @@ export interface MaintenanceEventItem {
   odometer_at_service: number | null;
 }
 
+export type MaintenanceBadge = "ok" | "needs_attention" | "overdue";
+
 export interface MaintenanceStatus {
   last_service_date: string | null;
   next_service_due_km: number | null;
   pct_interval_consumed: number | null;
+  status: MaintenanceBadge | null;
   history: MaintenanceEventItem[];
 }
 
@@ -43,6 +48,9 @@ export interface CostSnapshot {
   fuel_cost: number | null;
   maintenance_cost: number | null;
   toll_cost: number | null;
+  fuel_cost_is_estimate: boolean;
+  maintenance_cost_is_estimate: boolean;
+  toll_cost_is_estimate: boolean;
   trip_tco: number | null;
   trip_cost_per_km: number | null;
   fleet_avg_cost_per_km: number | null;

@@ -18,41 +18,38 @@ const RESOLVED_STATUSES = new Set(["delivered", "delayed", "cancelled"]);
  * stop.eta by route_service.compute_weather_eta — the SAME timeline the map
  * and stat cards are built from, not an independently-fabricated one. The
  * first stop has no computed eta (compute_weather_eta only walks legs from
- * stop 2 onward), so it falls back to the trip's own pickup_time. Reached/
- * pending is derived from the trip's real status; "delayed" is a real
- * comparison against the stop's own window_end, or the trip's own Delayed
- * status attributed to the last reached stop.
+ * stop 2 onward), so it falls back to the trip's own pickup_time.
+ *
+ * A stop only becomes "completed" once the current time has actually passed
+ * its arrivedAt — not just because the trip's overall status is In-Transit.
+ * That's what previously made every stop but the last flip to Completed the
+ * moment a trip went In-Transit, regardless of whether its eta had passed.
+ * Once the trip itself resolves (Delivered/Delayed/Cancelled), every stop is
+ * treated as reached since the trip is over.
  */
 export function deriveStopProgress(stops: RouteStop[], trip: Trip): StopProgress[] {
   const sorted = [...stops].sort((a, b) => a.sequence - b.sequence);
-  const n = sorted.length;
   const statusLower = (trip.status ?? "").toLowerCase();
+  const tripResolved = RESOLVED_STATUSES.has(statusLower);
+  const now = Date.now();
 
-  let reachedCount: number;
-  if (RESOLVED_STATUSES.has(statusLower)) {
-    reachedCount = n;
-  } else if (statusLower === "in-transit") {
-    reachedCount = Math.max(n - 1, 0);
-  } else {
-    reachedCount = 0;
-  }
-
-  const lastReachedIndex = reachedCount - 1;
+  const lastIndex = sorted.length - 1;
 
   return sorted.map((stop, index) => {
-    if (index >= reachedCount) {
-      return { stop, arrivedAt: null, status: "pending" as const };
-    }
-
     const arrivedAt = stop.eta
       ? new Date(stop.eta)
       : index === 0 && trip.pickup_time
         ? new Date(trip.pickup_time)
         : null;
 
+    const reached = tripResolved || (arrivedAt != null && arrivedAt.getTime() <= now);
+    if (!reached) {
+      return { stop, arrivedAt: null, status: "pending" as const };
+    }
+
     const windowEnd = stop.window_end ? new Date(stop.window_end) : null;
     const pastWindow = Boolean(arrivedAt && windowEnd && arrivedAt.getTime() > windowEnd.getTime());
-    const tripMarkedDelayed = statusLower === "delayed" && index === lastReachedIndex;
+    const tripMarkedDelayed = statusLower === "delayed" && index === lastIndex;
 
     const status: StopProgressStatus = pastWindow || tripMarkedDelayed ? "delayed" : "completed";
     return { stop, arrivedAt, status };

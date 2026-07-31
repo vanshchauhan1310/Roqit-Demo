@@ -1,3 +1,5 @@
+import hashlib
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -14,10 +16,20 @@ from app.schemas.vehicle_intelligence import (
     VehicleIntelligenceRead,
     VehicleSummary,
 )
+from app.services import fuel_cost_service
 
 # Resolved trips only - fuel/cost/distance figures are only meaningful once a
 # trip has actually completed and its actuals were recorded.
 _RESOLVED_STATUSES = ("delivered", "delayed")
+
+# Maintenance-interval badge thresholds, matching the progress bar shown in the UI.
+_NEEDS_ATTENTION_THRESHOLD_PCT = 90
+_OVERDUE_THRESHOLD_PCT = 100
+
+# Demo-only: there's no live toll feed wired in, so toll cost is a hand-coded
+# per-km rate with a deterministic per-trip multiplier (derived from the trip_id
+# hash, not random) so it varies trip-to-trip the way a real toll route would.
+TOLL_COST_PER_KM_INR = 2.0
 
 
 def _build_vehicle_summary(vehicle: Vehicle, db: Session) -> VehicleSummary:
@@ -47,10 +59,22 @@ def _build_load_capacity(vehicle: Vehicle, trip: Trip) -> LoadCapacity:
     )
 
 
-def _build_fuel_efficiency(db: Session, vehicle: Vehicle, trip: Trip) -> FuelEfficiencyComparison:
-    this_trip_kmpl = None
-    if trip.actual_distance_km and trip.fuel_consumed_l:
-        this_trip_kmpl = round(trip.actual_distance_km / trip.fuel_consumed_l, 2)
+async def _predict_fuel_liters(trip: Trip) -> float | None:
+    try:
+        result = await fuel_cost_service.predict_fuel_liters_for_trip(trip)
+        return result["predicted_fuel_liters"]
+    except (
+        fuel_cost_service.MissingFeatureDataError,
+        fuel_cost_service.UnsupportedCategoryError,
+        fuel_cost_service.InvalidFeatureRangeError,
+    ):
+        return None
+
+
+def _build_fuel_efficiency(
+    db: Session, vehicle: Vehicle, trip: Trip, predicted_fuel_liters: float | None
+) -> FuelEfficiencyComparison:
+    distance = trip.actual_distance_km or trip.planned_distance_km
 
     fleet_avg_kmpl = None
     if vehicle.vehicle_type:
@@ -61,14 +85,31 @@ def _build_fuel_efficiency(db: Session, vehicle: Vehicle, trip: Trip) -> FuelEff
         )
         fleet_avg_kmpl = round(avg, 2) if avg is not None else None
 
+    this_trip_fuel_l = trip.fuel_consumed_l
+    this_trip_fuel_l_is_estimate = this_trip_fuel_l is None
+    if this_trip_fuel_l is None and trip.actual_distance_km and vehicle.avg_kmpl_rated:
+        this_trip_fuel_l = trip.actual_distance_km / vehicle.avg_kmpl_rated
+
     return FuelEfficiencyComparison(
-        this_trip_kmpl=this_trip_kmpl,
-        rated_kmpl=vehicle.avg_kmpl_rated,
-        fleet_avg_kmpl=fleet_avg_kmpl,
+        this_trip_fuel_l=round(this_trip_fuel_l, 1) if this_trip_fuel_l is not None else None,
+        this_trip_fuel_l_is_estimate=this_trip_fuel_l_is_estimate,
+        predicted_fuel_l=round(predicted_fuel_liters, 1) if predicted_fuel_liters is not None else None,
+        rated_fuel_l=round(distance / vehicle.avg_kmpl_rated, 1) if distance and vehicle.avg_kmpl_rated else None,
+        fleet_avg_fuel_l=round(distance / fleet_avg_kmpl, 1) if distance and fleet_avg_kmpl else None,
     )
 
 
-def _build_maintenance_status(db: Session, vehicle: Vehicle) -> MaintenanceStatus:
+def _maintenance_badge(pct: float | None) -> str | None:
+    if pct is None:
+        return None
+    if pct > _OVERDUE_THRESHOLD_PCT:
+        return "overdue"
+    if pct > _NEEDS_ATTENTION_THRESHOLD_PCT:
+        return "needs_attention"
+    return "ok"
+
+
+def _build_maintenance_status(db: Session, vehicle: Vehicle) -> tuple[MaintenanceStatus, list[MaintenanceEvent]]:
     events = (
         db.query(MaintenanceEvent)
         .filter(MaintenanceEvent.vehicle_id == vehicle.vehicle_id)
@@ -90,10 +131,11 @@ def _build_maintenance_status(db: Session, vehicle: Vehicle) -> MaintenanceStatu
             1,
         )
 
-    return MaintenanceStatus(
+    status = MaintenanceStatus(
         last_service_date=vehicle.last_service_date,
         next_service_due_km=vehicle.next_service_due_km,
         pct_interval_consumed=pct_interval_consumed,
+        status=_maintenance_badge(pct_interval_consumed),
         history=[
             MaintenanceEventRead(
                 event_id=e.event_id,
@@ -107,15 +149,70 @@ def _build_maintenance_status(db: Session, vehicle: Vehicle) -> MaintenanceStatu
             for e in events
         ],
     )
+    return status, events
 
 
-def _build_cost_snapshot(db: Session, trip: Trip) -> CostSnapshot:
+def _toll_cost_estimate(trip: Trip, distance: float | None) -> float | None:
+    if distance is None:
+        return None
+    # Deterministic 0.70-1.30x spread from the trip_id hash - not random, but
+    # varies trip-to-trip the way real toll routes would.
+    digest = int(hashlib.sha1(trip.trip_id.encode()).hexdigest(), 16)
+    multiplier = 0.7 + (digest % 61) / 100
+    return round(TOLL_COST_PER_KM_INR * distance * multiplier, 2)
+
+
+def _maintenance_cost_estimate(
+    db: Session, vehicle: Vehicle, events: list[MaintenanceEvent]
+) -> float | None:
+    """Overall maintenance cost attributable to this trip - the vehicle's own
+    average cost per service event, not prorated to distance (a single
+    service isn't a per-km expense the way fuel is)."""
+    costs = [e.cost for e in events if e.cost is not None]
+    if costs:
+        return round(sum(costs) / len(costs), 2)
+
+    # Fall back to the same-vehicle-type fleet's average event cost if this
+    # vehicle has no service history yet.
+    fleet_avg = (
+        db.query(func.avg(MaintenanceEvent.cost))
+        .join(Vehicle, Vehicle.vehicle_id == MaintenanceEvent.vehicle_id)
+        .filter(Vehicle.vehicle_type == vehicle.vehicle_type, MaintenanceEvent.cost.isnot(None))
+        .scalar()
+    )
+    return round(fleet_avg, 2) if fleet_avg is not None else None
+
+
+def _build_cost_snapshot(
+    db: Session,
+    vehicle: Vehicle,
+    trip: Trip,
+    events: list[MaintenanceEvent],
+    predicted_fuel_liters: float | None,
+) -> CostSnapshot:
+    distance = trip.actual_distance_km or trip.planned_distance_km
+
+    fuel_cost = trip.fuel_cost
+    fuel_cost_is_estimate = fuel_cost is None
+    if fuel_cost is None and predicted_fuel_liters is not None and trip.fuel_price_per_l is not None:
+        fuel_cost = round(predicted_fuel_liters * trip.fuel_price_per_l, 2)
+
+    toll_cost = trip.toll_cost
+    toll_cost_is_estimate = toll_cost is None
+    if toll_cost is None:
+        toll_cost = _toll_cost_estimate(trip, distance)
+
+    maintenance_cost = trip.maintenance_cost
+    maintenance_cost_is_estimate = maintenance_cost is None
+    if maintenance_cost is None:
+        maintenance_cost = _maintenance_cost_estimate(db, vehicle, events)
+
     trip_tco = None
     trip_cost_per_km = None
-    if trip.fuel_cost is not None and trip.maintenance_cost is not None and trip.toll_cost is not None:
-        trip_tco = round(trip.fuel_cost + trip.maintenance_cost + trip.toll_cost, 2)
-        if trip.actual_distance_km:
-            trip_cost_per_km = round(trip_tco / trip.actual_distance_km, 2)
+    if fuel_cost is not None and maintenance_cost is not None and toll_cost is not None:
+        trip_tco = round(fuel_cost + maintenance_cost + toll_cost, 2)
+        if distance:
+            trip_cost_per_km = round(trip_tco / distance, 2)
 
     fleet_costs = (
         db.query(Trip.fuel_cost, Trip.maintenance_cost, Trip.toll_cost, Trip.actual_distance_km)
@@ -129,30 +226,34 @@ def _build_cost_snapshot(db: Session, trip: Trip) -> CostSnapshot:
         )
         .all()
     )
-    per_km_costs = [
-        (fuel + maint + toll) / dist for fuel, maint, toll, dist in fleet_costs if dist
-    ]
+    per_km_costs = [(fuel + maint + toll) / dist for fuel, maint, toll, dist in fleet_costs if dist]
     fleet_avg_cost_per_km = round(sum(per_km_costs) / len(per_km_costs), 2) if per_km_costs else None
 
     return CostSnapshot(
-        fuel_cost=trip.fuel_cost,
-        maintenance_cost=trip.maintenance_cost,
-        toll_cost=trip.toll_cost,
+        fuel_cost=fuel_cost,
+        maintenance_cost=maintenance_cost,
+        toll_cost=toll_cost,
+        fuel_cost_is_estimate=fuel_cost_is_estimate,
+        maintenance_cost_is_estimate=maintenance_cost_is_estimate,
+        toll_cost_is_estimate=toll_cost_is_estimate,
         trip_tco=trip_tco,
         trip_cost_per_km=trip_cost_per_km,
         fleet_avg_cost_per_km=fleet_avg_cost_per_km,
     )
 
 
-def get_vehicle_intelligence(db: Session, trip: Trip) -> VehicleIntelligenceRead | None:
+async def get_vehicle_intelligence(db: Session, trip: Trip) -> VehicleIntelligenceRead | None:
     vehicle = trip.vehicle
     if vehicle is None:
         return None
 
+    predicted_fuel_liters = await _predict_fuel_liters(trip)
+    maintenance_status, events = _build_maintenance_status(db, vehicle)
+
     return VehicleIntelligenceRead(
         vehicle=_build_vehicle_summary(vehicle, db),
         load=_build_load_capacity(vehicle, trip),
-        fuel_efficiency=_build_fuel_efficiency(db, vehicle, trip),
-        maintenance=_build_maintenance_status(db, vehicle),
-        cost=_build_cost_snapshot(db, trip),
+        fuel_efficiency=_build_fuel_efficiency(db, vehicle, trip, predicted_fuel_liters),
+        maintenance=maintenance_status,
+        cost=_build_cost_snapshot(db, vehicle, trip, events, predicted_fuel_liters),
     )

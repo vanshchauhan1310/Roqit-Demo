@@ -1,11 +1,14 @@
 import argparse
 import json
 
-from src.models import delay_risk, eta_prediction
+from src.models import delay_risk, eta_prediction, expected_delay, fuel_consumption, trip_cost
 
 MODEL_PREDICTORS = {
     "eta": eta_prediction.predict,
     "delay": delay_risk.predict,
+    "expected_delay": expected_delay.predict,
+    "fuel_consumption": fuel_consumption.predict,
+    "trip_cost": trip_cost.predict,
 }
 
 

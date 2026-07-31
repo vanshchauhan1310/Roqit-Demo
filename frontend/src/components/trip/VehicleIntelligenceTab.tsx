@@ -1,6 +1,6 @@
 import { Trip } from "@/types/trip";
 import { useVehicleIntelligence } from "@/hooks/useVehicleIntelligence";
-import type { FuelEfficiencyComparison, MaintenanceEventItem } from "@/types/vehicleIntelligence";
+import type { FuelEfficiencyComparison, MaintenanceBadge, MaintenanceEventItem } from "@/types/vehicleIntelligence";
 
 interface VehicleIntelligenceTabProps {
   trip: Trip;
@@ -58,11 +58,15 @@ export function VehicleIntelligenceTab({ trip }: VehicleIntelligenceTabProps) {
           lastServiceDate={maintenance.last_service_date}
           nextServiceDueKm={maintenance.next_service_due_km}
           pctIntervalConsumed={maintenance.pct_interval_consumed}
+          status={maintenance.status}
         />
         <CostSnapshotCard
           fuelCost={cost.fuel_cost}
           maintenanceCost={cost.maintenance_cost}
           tollCost={cost.toll_cost}
+          fuelCostIsEstimate={cost.fuel_cost_is_estimate}
+          maintenanceCostIsEstimate={cost.maintenance_cost_is_estimate}
+          tollCostIsEstimate={cost.toll_cost_is_estimate}
           tripTco={cost.trip_tco}
           tripCostPerKm={cost.trip_cost_per_km}
           fleetAvgCostPerKm={cost.fleet_avg_cost_per_km}
@@ -135,12 +139,27 @@ function VehicleSummaryCard({
   );
 }
 
-function EfficiencyBar({ label, value, max, colorClass }: { label: string; value: number | null; max: number; colorClass: string }) {
+function EfficiencyBar({
+  label,
+  value,
+  max,
+  colorClass,
+  isEstimate,
+}: {
+  label: string;
+  value: number | null;
+  max: number;
+  colorClass: string;
+  isEstimate?: boolean;
+}) {
   return (
     <div>
       <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-        <span>{label}</span>
-        <span className="font-medium text-gray-700">{value != null ? `${value} km/l` : "no data"}</span>
+        <span>
+          {label}
+          {isEstimate && value != null && <span className="text-gray-400"> (estimated)</span>}
+        </span>
+        <span className="font-medium text-gray-700">{value != null ? `${value} L` : "no data"}</span>
       </div>
       <div className="h-3 rounded-full bg-gray-100 overflow-hidden">
         {value != null && (
@@ -152,39 +171,67 @@ function EfficiencyBar({ label, value, max, colorClass }: { label: string; value
 }
 
 function FuelEfficiencyCard({ fuelEfficiency }: { fuelEfficiency: FuelEfficiencyComparison }) {
-  const { this_trip_kmpl, rated_kmpl, fleet_avg_kmpl } = fuelEfficiency;
-  const max = Math.max(this_trip_kmpl ?? 0, rated_kmpl ?? 0, fleet_avg_kmpl ?? 0, 1) * 1.15;
+  const { this_trip_fuel_l, this_trip_fuel_l_is_estimate, predicted_fuel_l, rated_fuel_l, fleet_avg_fuel_l } = fuelEfficiency;
+  const max = Math.max(this_trip_fuel_l ?? 0, predicted_fuel_l ?? 0, rated_fuel_l ?? 0, fleet_avg_fuel_l ?? 0, 1) * 1.15;
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4">
       <h3 className="text-sm font-semibold text-gray-900">Fuel efficiency comparison</h3>
-      <p className="text-xs text-gray-500 mt-0.5 mb-4">km/l for this trip vs. rated vs. fleet average</p>
+      <p className="text-xs text-gray-500 mt-0.5 mb-4">Liters for this trip vs. predicted vs. rated vs. fleet average</p>
       <div className="space-y-3">
-        <EfficiencyBar label="This trip" value={this_trip_kmpl} max={max} colorClass="bg-red-500" />
-        <EfficiencyBar label="Rated" value={rated_kmpl} max={max} colorClass="bg-teal-600" />
-        <EfficiencyBar label="Fleet avg (same vehicle type)" value={fleet_avg_kmpl} max={max} colorClass="bg-teal-300" />
+        <EfficiencyBar
+          label="This trip (actual)"
+          value={this_trip_fuel_l}
+          max={max}
+          colorClass="bg-red-500"
+          isEstimate={this_trip_fuel_l_is_estimate}
+        />
+        <EfficiencyBar label="Predicted (ML)" value={predicted_fuel_l} max={max} colorClass="bg-violet-500" />
+        <EfficiencyBar label="Rated" value={rated_fuel_l} max={max} colorClass="bg-teal-600" />
+        <EfficiencyBar label="Fleet avg (same vehicle type)" value={fleet_avg_fuel_l} max={max} colorClass="bg-teal-300" />
       </div>
-      {this_trip_kmpl == null && (
+      {this_trip_fuel_l == null && (
         <p className="text-xs text-gray-400 mt-3">
-          "This trip" needs both actual distance and fuel consumed — only available once the trip resolves.
+          "This trip (actual)" needs either recorded fuel consumption or a rated km/l figure to estimate from.
         </p>
       )}
     </div>
   );
 }
 
+const MAINTENANCE_BADGE_STYLE: Record<MaintenanceBadge, string> = {
+  ok: "bg-emerald-50 text-emerald-700",
+  needs_attention: "bg-amber-50 text-amber-700",
+  overdue: "bg-red-50 text-red-600",
+};
+
+const MAINTENANCE_BADGE_LABEL: Record<MaintenanceBadge, string> = {
+  ok: "On track",
+  needs_attention: "Needs attention",
+  overdue: "Overdue",
+};
+
 function MaintenanceStatusCard({
   lastServiceDate,
   nextServiceDueKm,
   pctIntervalConsumed,
+  status,
 }: {
   lastServiceDate: string | null;
   nextServiceDueKm: number | null;
   pctIntervalConsumed: number | null;
+  status: MaintenanceBadge | null;
 }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4">
-      <h3 className="text-sm font-semibold text-gray-900">Maintenance status</h3>
+      <div className="flex items-start justify-between">
+        <h3 className="text-sm font-semibold text-gray-900">Maintenance status</h3>
+        {status && (
+          <span className={`px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap ${MAINTENANCE_BADGE_STYLE[status]}`}>
+            {MAINTENANCE_BADGE_LABEL[status]}
+          </span>
+        )}
+      </div>
       <div className="mt-4 space-y-1">
         <div className="text-sm text-gray-600">
           Last service <span className="font-medium text-gray-900">{formatDate(lastServiceDate)}</span>
@@ -197,7 +244,9 @@ function MaintenanceStatusCard({
         <>
           <div className="mt-3 h-2 rounded-full bg-gray-100 overflow-hidden">
             <div
-              className={`h-full rounded-full ${pctIntervalConsumed >= 90 ? "bg-red-500" : "bg-teal-600"}`}
+              className={`h-full rounded-full ${
+                status === "overdue" ? "bg-red-500" : status === "needs_attention" ? "bg-amber-500" : "bg-teal-600"
+              }`}
               style={{ width: `${Math.min(pctIntervalConsumed, 100)}%` }}
             />
           </div>
@@ -216,6 +265,9 @@ function CostSnapshotCard({
   fuelCost,
   maintenanceCost,
   tollCost,
+  fuelCostIsEstimate,
+  maintenanceCostIsEstimate,
+  tollCostIsEstimate,
   tripTco,
   tripCostPerKm,
   fleetAvgCostPerKm,
@@ -223,6 +275,9 @@ function CostSnapshotCard({
   fuelCost: number | null;
   maintenanceCost: number | null;
   tollCost: number | null;
+  fuelCostIsEstimate: boolean;
+  maintenanceCostIsEstimate: boolean;
+  tollCostIsEstimate: boolean;
   tripTco: number | null;
   tripCostPerKm: number | null;
   fleetAvgCostPerKm: number | null;
@@ -231,16 +286,19 @@ function CostSnapshotCard({
     tripCostPerKm != null && fleetAvgCostPerKm
       ? Math.round(((tripCostPerKm - fleetAvgCostPerKm) / fleetAvgCostPerKm) * 100)
       : null;
+  const anyEstimate = fuelCostIsEstimate || maintenanceCostIsEstimate || tollCostIsEstimate;
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4">
       <h3 className="text-sm font-semibold text-gray-900">Cost snapshot</h3>
-      <p className="text-xs text-gray-500 mt-0.5 mb-4">This trip's real recorded costs</p>
+      <p className="text-xs text-gray-500 mt-0.5 mb-4">
+        {anyEstimate ? "Recorded where available, estimated otherwise" : "This trip's real recorded costs"}
+      </p>
       <div className="grid grid-cols-2 gap-3">
-        <CostTile label="Fuel" value={formatCurrency(fuelCost)} />
-        <CostTile label="Maintenance" value={formatCurrency(maintenanceCost)} />
-        <CostTile label="Tolls" value={formatCurrency(tollCost)} />
-        <CostTile label="Trip TCO" value={formatCurrency(tripTco)} />
+        <CostTile label="Fuel" value={formatCurrency(fuelCost)} isEstimate={fuelCostIsEstimate} />
+        <CostTile label="Maintenance" value={formatCurrency(maintenanceCost)} isEstimate={maintenanceCostIsEstimate} />
+        <CostTile label="Tolls" value={formatCurrency(tollCost)} isEstimate={tollCostIsEstimate} />
+        <CostTile label="Trip TCO" value={formatCurrency(tripTco)} isEstimate={anyEstimate} />
       </div>
       {deltaPct != null ? (
         <p className="text-xs text-gray-400 mt-3">
@@ -259,11 +317,12 @@ function CostSnapshotCard({
   );
 }
 
-function CostTile({ label, value }: { label: string; value: string }) {
+function CostTile({ label, value, isEstimate }: { label: string; value: string; isEstimate: boolean }) {
   return (
     <div className="bg-gray-50 rounded-lg p-3">
       <div className="text-[10.5px] font-semibold tracking-wider text-gray-400 uppercase">{label}</div>
       <div className="text-lg font-semibold text-gray-900 mt-0.5">{value}</div>
+      {isEstimate && value !== "—" && <div className="text-[10px] text-gray-400 mt-0.5">estimated</div>}
     </div>
   );
 }
