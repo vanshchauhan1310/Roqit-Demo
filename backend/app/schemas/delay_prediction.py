@@ -15,3 +15,7 @@ class DelayPredictionRead(BaseModel):
     model_version: str
     features: dict[str, Any]
     predicted_at: datetime
+
+
+class ExpectedDelayRead(BaseModel):
+    predicted_delay_minutes: float

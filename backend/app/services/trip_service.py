@@ -5,16 +5,42 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.realtime_fleet_status import RealtimeFleetStatus
 from app.models.route import Route, RouteStop
 from app.models.trip import Trip
 from app.schemas.trip import TripCreate, TripFilterOptions, TripOutcomeUpdate
+from app.services.weather_client import get_ml_weather_condition
 
 # Demo-only: there's no live telemetry feed wired in yet, so every trip gets a deterministic
 # "actual" outcome derived from its planned values instead of leaving them NULL forever.
 # >1.0 so the demo always shows some real-world overage (detours, traffic) vs the plan.
 DEMO_ACTUAL_DISTANCE_FACTOR = 1.12
 DEMO_ACTUAL_DELIVERY_OFFSET_MINUTES = 45
+
+# Hand-coded heuristics for the 3 ML-required fields with no live source and no
+# dispatcher-entry requirement — same "rule-based, clearly labeled, not ML"
+# pattern as eta_service's weather multiplier table. Tune freely.
+_HIGHWAY_DISTANCE_THRESHOLD_KM = 15
+_HIGH_TRAFFIC_HOURS = {8, 9, 17, 18, 19}
+_MEDIUM_TRAFFIC_HOURS = {7, 10, 16, 20}
+
+
+def _infer_road_type(planned_distance_km: float | None) -> str:
+    if planned_distance_km is not None and planned_distance_km >= _HIGHWAY_DISTANCE_THRESHOLD_KM:
+        return "Highway"
+    return "City Road"
+
+
+def _infer_traffic_density(pickup_time: datetime | None) -> str:
+    if pickup_time is None:
+        return "Medium"
+    hour = pickup_time.hour
+    if hour in _HIGH_TRAFFIC_HOURS:
+        return "High"
+    if hour in _MEDIUM_TRAFFIC_HOURS:
+        return "Medium"
+    return "Low"
 
 # Statuses this lazy transition is allowed to touch — never overrides a manually-set
 # Delayed/Cancelled/Delivered status.
@@ -50,7 +76,7 @@ def _generate_trip_id() -> str:
     return f"TRP-{uuid.uuid4().hex[:8].upper()}"
 
 
-def create_trip(db: Session, trip_in: TripCreate) -> Trip:
+async def create_trip(db: Session, trip_in: TripCreate) -> Trip:
     trip_data = trip_in.model_dump()
 
     if trip_data.get("planned_distance_km") is not None:
@@ -60,6 +86,22 @@ def create_trip(db: Session, trip_in: TripCreate) -> Trip:
         trip_data["actual_delivery_time"] = trip_data["planned_delivery_time"] + timedelta(
             minutes=DEMO_ACTUAL_DELIVERY_OFFSET_MINUTES
         )
+
+    # Dispatcher no longer enters these - derived automatically so the wizard
+    # doesn't ask questions a human at booking time can't reliably answer anyway.
+    if trip_data.get("weather_condition") is None:
+        trip_data["weather_condition"] = await get_ml_weather_condition(
+            trip_data.get("gps_start_lat"), trip_data.get("gps_start_lon")
+        )
+
+    if trip_data.get("road_type") is None:
+        trip_data["road_type"] = _infer_road_type(trip_data.get("planned_distance_km"))
+
+    if trip_data.get("traffic_density") is None:
+        trip_data["traffic_density"] = _infer_traffic_density(trip_data.get("pickup_time"))
+
+    if trip_data.get("fuel_price_per_l") is None:
+        trip_data["fuel_price_per_l"] = settings.DEFAULT_FUEL_PRICE_PER_L
 
     trip = Trip(trip_id=_generate_trip_id(), status="scheduled", **trip_data)
     db.add(trip)

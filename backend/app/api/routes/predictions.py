@@ -3,10 +3,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.schemas.delay_prediction import DelayPredictionRead
+from app.schemas.delay_prediction import DelayPredictionRead, ExpectedDelayRead
 from app.services import delay_prediction_service, trip_service
 
 router = APIRouter(prefix="/predictions/delay", tags=["predictions"])
+expected_delay_router = APIRouter(prefix="/predictions/expected-delay", tags=["predictions"])
 
 
 @router.post("/latest", response_model=DelayPredictionRead)
@@ -40,3 +41,23 @@ async def _run_pipeline(db: Session, trip):
         raise HTTPException(
             status_code=502, detail=f"ML service error: {exc.response.status_code} {exc.response.text}"
         )
+
+
+@expected_delay_router.post("/trips/{trip_id}", response_model=ExpectedDelayRead)
+async def predict_expected_delay_for_trip(trip_id: str, db: Session = Depends(get_db)):
+    trip = trip_service.get_trip(db, trip_id)
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    try:
+        result = await delay_prediction_service.predict_expected_delay_for_trip(db, trip)
+    except (
+        delay_prediction_service.MissingFeatureDataError,
+        delay_prediction_service.UnsupportedCategoryError,
+        delay_prediction_service.InvalidFeatureRangeError,
+    ) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"ML service error: {exc.response.status_code} {exc.response.text}"
+        )
+    return ExpectedDelayRead(**result)

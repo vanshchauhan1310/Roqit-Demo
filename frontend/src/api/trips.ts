@@ -1,5 +1,6 @@
 import { apiClient } from "./client";
 import type { CreateTripPayload, Trip, TripFilterOptions, TripFilters } from "@/types/trip";
+import type { VehicleIntelligence } from "@/types/vehicleIntelligence";
 
 export async function fetchTrips(skip = 0, limit = 100, filters: TripFilters = {}): Promise<Trip[]> {
   const { data } = await apiClient.get<Trip[]>("/trips", {
@@ -32,5 +33,10 @@ export async function createTrip(payload: CreateTripPayload): Promise<Trip> {
 
 export async function updateTripStatus(tripId: string, status: string): Promise<Trip> {
   const { data } = await apiClient.patch<Trip>(`/trips/${tripId}/status`, { status });
+  return data;
+}
+
+export async function fetchVehicleIntelligence(tripId: string): Promise<VehicleIntelligence> {
+  const { data } = await apiClient.get<VehicleIntelligence>(`/trips/${tripId}/vehicle-intelligence`);
   return data;
 }

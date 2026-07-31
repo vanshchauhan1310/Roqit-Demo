@@ -22,6 +22,39 @@ def load_feature_contract(path: Path = FEATURE_CONTRACT_PATH) -> dict:
         return json.load(f)
 
 
+# fuel_l_xgboost_v1.pkl / trip_cost_xgboost_v1.pkl's real trained schema, read directly
+# off the model's own booster.feature_names/feature_types (not guessed) - see
+# models_store inspection. Categorical vocab for all 5 'c' columns here happens to be
+# a subset of feature_contract_v2.json's, so no separate contract file is needed.
+COST_FEATURE_ORDER = [
+    "vehicle_type", "road_type", "traffic_density", "weather_condition", "fuel_type",
+    "planned_distance_km", "load_weight_kg", "avg_kmpl_rated", "vehicle_age_years", "fuel_price_per_l",
+]
+COST_CATEGORICAL_FEATURES = {"vehicle_type", "road_type", "traffic_density", "weather_condition", "fuel_type"}
+COST_INT_FEATURES = {"load_weight_kg", "vehicle_age_years"}
+
+
+def build_cost_features(df: pd.DataFrame, contract: dict | None = None) -> pd.DataFrame:
+    """Turns raw trip+vehicle rows into the exact 10-column frame fuel_consumption/
+    trip_cost's XGBRegressors expect, in the model's own trained column order/dtypes."""
+    contract = contract or load_feature_contract()
+    categorical_vocabulary = contract["categorical_vocabulary"]
+
+    features = pd.DataFrame(index=df.index)
+    for col in COST_FEATURE_ORDER:
+        if col not in df.columns:
+            raise KeyError(f"Missing required feature column: {col}")
+
+        if col in COST_CATEGORICAL_FEATURES:
+            features[col] = pd.Categorical(df[col], categories=categorical_vocabulary[col])
+        elif col in COST_INT_FEATURES:
+            features[col] = pd.to_numeric(df[col]).astype(int)
+        else:
+            features[col] = pd.to_numeric(df[col])
+
+    return features[COST_FEATURE_ORDER]
+
+
 def build_delay_features(df: pd.DataFrame, contract: dict | None = None) -> pd.DataFrame:
     """Turns raw trip rows into the exact 25-column frame delay_risk's XGBClassifier
     expects, in feature_contract_v2.json's order and dtypes (categorical dtype for

@@ -1,9 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchRoutes } from "@/api/routes";
 
-export function useRoutes() {
+export function useRoutes(tripId?: string) {
   return useQuery({
-    queryKey: ["routes"],
-    queryFn: fetchRoutes,
+    queryKey: ["routes", tripId ?? null],
+    queryFn: () => fetchRoutes(tripId),
   });
 }

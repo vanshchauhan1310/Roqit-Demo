@@ -11,6 +11,8 @@ export interface RouteStop {
   stop_type: StopType;
   window_start: string | null;
   window_end: string | null;
+  weather_condition: string | null;
+  weather_updated_at: string | null;
 }
 
 export interface Route {

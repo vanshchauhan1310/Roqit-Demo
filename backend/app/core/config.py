@@ -18,5 +18,14 @@ class Settings(BaseSettings):
     # real route geometry (frontend) and the duration/distance matrix (route optimizer).
     OSRM_BASE_URL: str = "https://router.project-osrm.org"
 
+    # OpenWeather Current Weather API — per-stop weather, cached on route_stops
+    # and refreshed lazily once it's over an hour old.
+    OPENWEATHER_API_KEY: str = ""
+    OPENWEATHER_URL: str = "https://api.openweathermap.org/data/2.5/weather"
+
+    # No live fuel-price feed is wired in — single configurable default used for
+    # every trip's ML features (fuel_price_per_l) instead of asking per-trip.
+    DEFAULT_FUEL_PRICE_PER_L: float = 92.5
+
 
 settings = Settings()

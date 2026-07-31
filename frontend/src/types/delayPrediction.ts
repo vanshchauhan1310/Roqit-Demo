@@ -7,3 +7,7 @@ export interface DelayPrediction {
   features: Record<string, unknown>;
   predicted_at: string;
 }
+
+export interface ExpectedDelay {
+  predicted_delay_minutes: number;
+}
