@@ -33,5 +33,7 @@ class RouteStop(Base):
     stop_type: Mapped[str] = mapped_column(String(20), default="waypoint")
     window_start: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
     window_end: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+    weather_condition: Mapped[str | None] = mapped_column(String(50))
+    weather_updated_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
 
     route: Mapped["Route"] = relationship(back_populates="stops")

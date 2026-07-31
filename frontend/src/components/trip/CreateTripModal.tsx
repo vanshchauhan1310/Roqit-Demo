@@ -498,7 +498,14 @@ interface LoadStepProps {
   onValueChange: (value: string) => void;
 }
 
-function LoadStep({ loadWeightKg, onWeightChange, loadDescription, onDescriptionChange, loadValue, onValueChange }: LoadStepProps) {
+function LoadStep({
+  loadWeightKg,
+  onWeightChange,
+  loadDescription,
+  onDescriptionChange,
+  loadValue,
+  onValueChange,
+}: LoadStepProps) {
   return (
     <div className="space-y-4">
       <div>

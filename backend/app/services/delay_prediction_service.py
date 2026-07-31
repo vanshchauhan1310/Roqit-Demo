@@ -7,16 +7,16 @@ from sqlalchemy.orm import Session
 from app.models.delay_prediction import DelayPrediction
 from app.models.trip import RESOLVED_STATUSES, DELAYED_STATUS, Trip
 from app.services import ml_client
+from app.services.weather_client import get_ml_weather_condition
 
 MODEL_VERSION = "delay_risk_xgboost_v2"
 FEATURE_CONTRACT_PATH = Path(__file__).resolve().parents[3] / "ml" / "feature_contract_v2.json"
 
-# Fields with no sane default - if any of these are still None on the
-# trip/vehicle/driver, the record hasn't been fully onboarded yet and we
-# refuse to guess rather than send the model garbage.
+# weather_condition is handled separately (live fetch with fallback to the stored
+# value) rather than as a plain null-check, see engineer_features.
 REQUIRED_TRIP_FIELDS = [
     "vehicle_type", "gps_start_lat", "gps_start_lon", "gps_end_lat", "gps_end_lon",
-    "planned_distance_km", "weather_condition", "road_type", "traffic_density",
+    "planned_distance_km", "road_type", "traffic_density",
     "fuel_price_per_l", "pickup_time", "planned_delivery_time",
 ]
 REQUIRED_VEHICLE_FIELDS = ["fuel_type", "load_capacity_kg", "year"]
@@ -101,10 +101,15 @@ def _check_ranges(features: dict) -> None:
         )
 
 
-def engineer_features(db: Session, trip: Trip) -> dict:
+async def engineer_features(db: Session, trip: Trip) -> dict:
     """Fetch Latest Trip -> Engineer Features: builds the exact 25-field
     payload ml/feature_contract_v2.json / delay_risk.predict() expects, from
-    the real Supabase trips/driver_master/vehicle_master tables."""
+    the real Supabase trips/driver_master/vehicle_master tables.
+
+    weather_condition prefers a LIVE OpenWeather lookup at the trip's start
+    coordinates over the stored column, falling back to the stored value if
+    the live fetch is unavailable (no API key, provider error, missing GPS).
+    """
     contract = _load_feature_contract()
     vocabulary = contract["categorical_vocabulary"]
 
@@ -116,7 +121,12 @@ def engineer_features(db: Session, trip: Trip) -> dict:
     if driver is None:
         raise MissingFeatureDataError(f"Trip {trip.trip_id} has no assigned driver")
 
+    live_weather = await get_ml_weather_condition(trip.gps_start_lat, trip.gps_start_lon)
+    weather_condition = live_weather or trip.weather_condition
+
     missing = [f for f in REQUIRED_TRIP_FIELDS if getattr(trip, f) is None]
+    if weather_condition is None:
+        missing.append("weather_condition")
     missing += [f"vehicle.{f}" for f in REQUIRED_VEHICLE_FIELDS if getattr(vehicle, f) is None]
     missing += [f"driver.{f}" for f in REQUIRED_DRIVER_FIELDS if getattr(driver, f) is None]
     if missing:
@@ -156,7 +166,7 @@ def engineer_features(db: Session, trip: Trip) -> dict:
         "gps_end_lat": trip.gps_end_lat,
         "gps_end_lon": trip.gps_end_lon,
         "planned_distance_km": trip.planned_distance_km,
-        "weather_condition": trip.weather_condition,
+        "weather_condition": weather_condition,
         "road_type": trip.road_type,
         "traffic_density": trip.traffic_density,
         "fuel_price_per_l": trip.fuel_price_per_l,
@@ -200,6 +210,14 @@ def store_prediction(db: Session, trip: Trip, features: dict, result: dict) -> D
 
 async def predict_delay_for_trip(db: Session, trip: Trip) -> DelayPrediction:
     """Engineer Features -> Load delay_model.pkl -> Predict -> Store Prediction."""
-    features = engineer_features(db, trip)
+    features = await engineer_features(db, trip)
     result = await ml_client.predict_delay(features)
     return store_prediction(db, trip, features, result)
+
+
+async def predict_expected_delay_for_trip(db: Session, trip: Trip) -> dict:
+    """Same feature pipeline as predict_delay_for_trip, but calls the expected-delay
+    (minutes) regressor instead. Not persisted - this is a lighter-weight, display-only
+    prediction rather than the audited DelayPrediction record."""
+    features = await engineer_features(db, trip)
+    return await ml_client.predict_expected_delay(features)

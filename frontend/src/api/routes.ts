@@ -2,8 +2,8 @@ import { apiClient } from "./client";
 import type { AddRouteStopPayload, CreateRoutePayload, Route, RouteStop } from "@/types/route";
 import type { OptimizeRouteResult, OptimizeStopInput } from "@/types/optimize";
 
-export async function fetchRoutes(): Promise<Route[]> {
-  const { data } = await apiClient.get<Route[]>("/routes");
+export async function fetchRoutes(tripId?: string): Promise<Route[]> {
+  const { data } = await apiClient.get<Route[]>("/routes", { params: tripId ? { trip_id: tripId } : undefined });
   return data;
 }
 

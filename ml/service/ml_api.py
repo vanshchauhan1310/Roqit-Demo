@@ -3,7 +3,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from src.models import delay_risk, eta_prediction
+from src.models import delay_risk, eta_prediction, expected_delay, fuel_consumption, trip_cost
 
 app = FastAPI(title="Fleet Optimization ML Service")
 
@@ -58,6 +58,34 @@ class DelayPredictionResponse(BaseModel):
     is_delayed_prediction: bool
 
 
+class ExpectedDelayResponse(BaseModel):
+    predicted_delay_minutes: float
+
+
+# Field order/types/categories read directly off fuel_l_xgboost_v1.pkl /
+# trip_cost_xgboost_v1.pkl's own trained booster metadata - both models share this
+# 10-field schema (see build_features.COST_FEATURE_ORDER), distinct from delay's 25.
+class CostPredictionRequest(BaseModel):
+    vehicle_type: Literal["Container Truck", "Mini Truck", "Refrigerated Truck", "Trailer", "Truck"]
+    road_type: Literal["City Road", "Highway", "Rural Road", "State Road"]
+    traffic_density: Literal["High", "Low", "Medium", "Severe"]
+    weather_condition: Literal["Clear", "Extreme Heat", "Fog", "Rain", "Storm"]
+    fuel_type: Literal["CNG", "Diesel"]
+    planned_distance_km: float
+    load_weight_kg: int
+    avg_kmpl_rated: float
+    vehicle_age_years: int
+    fuel_price_per_l: float
+
+
+class FuelPredictionResponse(BaseModel):
+    predicted_fuel_liters: float
+
+
+class TripCostPredictionResponse(BaseModel):
+    predicted_trip_cost: float
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -82,3 +110,34 @@ def predict_delay(request: DelayPredictionRequest):
             detail="Delay model not found in models_store/. Run src/train.py --model delay first.",
         )
     return DelayPredictionResponse(**result)
+
+
+# Same 25-field input as /predict/delay - both models share build_delay_features().
+@app.post("/predict/expected-delay", response_model=ExpectedDelayResponse)
+def predict_expected_delay(request: DelayPredictionRequest):
+    try:
+        result = expected_delay.predict(request.model_dump())
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=503,
+            detail="Expected-delay model not found in models_store/.",
+        )
+    return ExpectedDelayResponse(**result)
+
+
+@app.post("/predict/fuel-liters", response_model=FuelPredictionResponse)
+def predict_fuel_liters(request: CostPredictionRequest):
+    try:
+        result = fuel_consumption.predict(request.model_dump())
+    except FileNotFoundError:
+        raise HTTPException(status_code=503, detail="Fuel-consumption model not found in models_store/.")
+    return FuelPredictionResponse(**result)
+
+
+@app.post("/predict/trip-cost", response_model=TripCostPredictionResponse)
+def predict_trip_cost(request: CostPredictionRequest):
+    try:
+        result = trip_cost.predict(request.model_dump())
+    except FileNotFoundError:
+        raise HTTPException(status_code=503, detail="Trip-cost model not found in models_store/.")
+    return TripCostPredictionResponse(**result)

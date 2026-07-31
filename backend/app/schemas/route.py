@@ -24,6 +24,8 @@ class RouteStopRead(RouteStopBase):
 
     stop_id: uuid.UUID
     status: str
+    weather_condition: str | None = None
+    weather_updated_at: datetime | None = None
 
 
 class RouteBase(BaseModel):
@@ -50,3 +52,4 @@ class RouteRead(RouteBase):
     status: str
     created_at: datetime
     stops: list[RouteStopRead] = []
+    weather_eta: datetime | None = None  # rule-based (OSRM + weather multiplier), not ML — see eta_service.py

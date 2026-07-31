@@ -56,4 +56,8 @@ export interface CreateTripPayload {
   planned_distance_km?: number | null;
   load_weight_kg?: number | null;
   load_value?: number | null;
+  weather_condition?: string | null;
+  road_type?: string | null;
+  traffic_density?: string | null;
+  fuel_price_per_l?: number | null;
 }

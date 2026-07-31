@@ -92,3 +92,7 @@ class TripCreate(BaseModel):
     planned_delivery_time: Optional[datetime] = None
     load_weight_kg: Optional[int] = None
     load_value: Optional[float] = None
+    weather_condition: Optional[str] = None
+    road_type: Optional[str] = None
+    traffic_density: Optional[str] = None
+    fuel_price_per_l: Optional[float] = None
