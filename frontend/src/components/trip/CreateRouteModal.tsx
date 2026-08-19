@@ -1,366 +1,807 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { isAxiosError } from "axios";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { createRoute, optimizeRouteOrder } from "@/api/routes";
-import { geocodeAddress } from "@/api/geocode";
+import { assignRoute, reorderRouteStops } from "@/api/routes";
+import { useUnassignedTrips } from "@/hooks/useUnassignedTrips";
+import { useDriverRoster } from "@/hooks/useDriverRoster";
+import { useVehicleRoster } from "@/hooks/useVehicleRoster";
 import { useRoadRoute } from "@/hooks/useRoadRoute";
-import { useToast } from "@/components/common/Toast";
 import { RouteMapPreview } from "./RouteMapPreview";
-import type { StopType } from "@/types/route";
+import type { Trip } from "@/types/trip";
+import type { DriverRosterItem, VehicleRosterItem } from "@/types/roster";
 import {
+  IconAlertTriangle,
   IconArrowDown,
   IconArrowUp,
-  IconMapPin,
-  IconPlus,
-  IconSparkle,
-  IconTrash,
+  IconCheck,
+  IconFuel,
+  IconShield,
+  IconStar,
   IconX,
 } from "@/components/common/icons";
 
 interface CreateRouteModalProps {
   open: boolean;
   onClose: () => void;
-  tripId?: string;
 }
 
-type GeocodeStatus = "idle" | "loading" | "success" | "error";
-
-interface StopForm {
-  key: string;
-  locationName: string;
-  addressDetail: string;
-  stopType: StopType;
-  latitude: number | null;
-  longitude: number | null;
-  errorRadius: number | null;
-  geocodeStatus: GeocodeStatus;
+interface StopPreview {
+  tripId: string;
+  stopType: "pickup" | "delivery";
 }
 
-const stopTypeOptions: { value: StopType; label: string }[] = [
-  { value: "pickup", label: "Pickup" },
-  { value: "waypoint", label: "Waypoint" },
-  { value: "delivery", label: "Delivery" },
-];
-
-function makeStop(): StopForm {
-  return {
-    key: crypto.randomUUID(),
-    locationName: "",
-    addressDetail: "",
-    stopType: "waypoint",
-    latitude: null,
-    longitude: null,
-    errorRadius: null,
-    geocodeStatus: "idle",
-  };
+interface TripLoad {
+  weightKg: string;
+  value: string;
 }
 
-function stopAddress(stop: StopForm): string {
-  return [stop.locationName, stop.addressDetail].filter(Boolean).join(", ");
+const STEP_LABELS = ["Trips", "Driver", "Vehicle", "Load", "Review"];
+const LAST_STEP = STEP_LABELS.length - 1;
+
+function buildDefaultStops(tripIds: string[]): StopPreview[] {
+  return [
+    ...tripIds.map((tripId) => ({ tripId, stopType: "pickup" as const })),
+    ...tripIds.map((tripId) => ({ tripId, stopType: "delivery" as const })),
+  ];
 }
 
-// No real toll-cost API is wired in — this stays a per-km heuristic on top of the real OSRM distance.
-const TOLL_RATE_PER_KM_INR = 2;
+function precedenceViolation(stops: StopPreview[]): boolean {
+  const pickupIndex = new Map<string, number>();
+  for (let i = 0; i < stops.length; i++) {
+    if (stops[i].stopType === "pickup") pickupIndex.set(stops[i].tripId, i);
+  }
+  for (let i = 0; i < stops.length; i++) {
+    const stop = stops[i];
+    if (stop.stopType !== "delivery") continue;
+    const pIndex = pickupIndex.get(stop.tripId);
+    if (pIndex != null && pIndex > i) return true;
+  }
+  return false;
+}
 
-export function CreateRouteModal({ open, onClose, tripId }: CreateRouteModalProps) {
-  const [stops, setStops] = useState<StopForm[]>([makeStop(), makeStop()]);
-  const [isOptimizing, setIsOptimizing] = useState(false);
-  const [optimizeError, setOptimizeError] = useState<string | null>(null);
+function sameOrder(a: StopPreview[], b: StopPreview[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((stop, i) => stop.tripId === b[i].tripId && stop.stopType === b[i].stopType);
+}
+
+export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
+  const [step, setStep] = useState(0);
+  const [selectedTripIds, setSelectedTripIds] = useState<string[]>([]);
+  const [stops, setStops] = useState<StopPreview[]>([]);
+  const [driverId, setDriverId] = useState("");
+  const [vehicleId, setVehicleId] = useState("");
+  const [loads, setLoads] = useState<Record<string, TripLoad>>({});
+  const [pickupDateTime, setPickupDateTime] = useState("");
+  const [routeName, setRouteName] = useState("");
+
   const queryClient = useQueryClient();
-  const { showToast } = useToast();
+  const { data: trips, isLoading: tripsLoading } = useUnassignedTrips();
+  const { data: drivers, isLoading: driversLoading } = useDriverRoster();
+  const { data: vehicles, isLoading: vehiclesLoading } = useVehicleRoster();
+
+  const tripsById = useMemo(() => new Map((trips ?? []).map((t) => [t.trip_id, t])), [trips]);
+  const selectedDriver = drivers?.find((d) => d.driver_id === driverId) ?? null;
+  const selectedVehicle = vehicles?.find((v) => v.vehicle_id === vehicleId) ?? null;
+
+  const defaultStops = useMemo(() => buildDefaultStops(selectedTripIds), [selectedTripIds]);
+  const reordered = !sameOrder(stops, defaultStops);
+
+  const mapStops = useMemo(
+    () =>
+      stops
+        .map((stop, i) => {
+          const trip = tripsById.get(stop.tripId);
+          const lat = stop.stopType === "pickup" ? trip?.gps_start_lat : trip?.gps_end_lat;
+          const lng = stop.stopType === "pickup" ? trip?.gps_start_lon : trip?.gps_end_lon;
+          if (lat == null || lng == null) return null;
+          return {
+            key: `${stop.tripId}:${stop.stopType}`,
+            lat,
+            lng,
+            label: `${stop.stopType === "pickup" ? "Pickup" : "Delivery"} · ${trip?.trip_id ?? ""}`,
+            sequence: i + 1,
+          };
+        })
+        .filter((s): s is NonNullable<typeof s> => s !== null),
+    [stops, tripsById],
+  );
+
+  const roadRoute = useRoadRoute(mapStops.map((s) => [s.lat, s.lng] as [number, number]));
+
+  const totalLoadKg = selectedTripIds.reduce(
+    (sum, tripId) => sum + (Number(loads[tripId]?.weightKg) || 0),
+    0,
+  );
+  const exceedsCapacity =
+    selectedVehicle?.load_capacity_kg != null && totalLoadKg > selectedVehicle.load_capacity_kg;
+
+  const allWeightsEntered =
+    selectedTripIds.length > 0 &&
+    selectedTripIds.every((tripId) => (loads[tripId]?.weightKg ?? "").trim() !== "");
 
   const mutation = useMutation({
-    mutationFn: () =>
-      createRoute({
-        trip_id: tripId,
-        stops: stops.map((stop, index) => ({
-          sequence: index + 1,
-          address: stopAddress(stop),
-          latitude: stop.latitude,
-          longitude: stop.longitude,
-          stop_type: stop.stopType,
+    mutationFn: async () => {
+      const route = await assignRoute({
+        trip_ids: selectedTripIds,
+        driver_id: driverId,
+        vehicle_id: vehicleId,
+        pickup_time: new Date(pickupDateTime).toISOString(),
+        name: routeName || null,
+        loads: selectedTripIds.map((tripId) => ({
+          trip_id: tripId,
+          load_weight_kg: loads[tripId]?.weightKg ? Number(loads[tripId].weightKg) : null,
+          load_value: loads[tripId]?.value ? Number(loads[tripId].value) : null,
         })),
-      }),
+      });
+
+      if (reordered) {
+        const byKey = new Map(route.stops.map((s) => [`${s.trip_id}:${s.stop_type}`, s.stop_id]));
+        const orderedStopIds = stops
+          .map((s) => byKey.get(`${s.tripId}:${s.stopType}`))
+          .filter((id): id is string => Boolean(id));
+        if (orderedStopIds.length === route.stops.length) {
+          await reorderRouteStops(route.route_id, { stop_ids: orderedStopIds });
+        }
+      }
+      return route;
+    },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["trips"] });
+      queryClient.invalidateQueries({ queryKey: ["trips", "unassigned"] });
       queryClient.invalidateQueries({ queryKey: ["routes"] });
-      setStops([makeStop(), makeStop()]);
-      onClose();
+      resetAndClose();
     },
   });
 
-  const geocodedPositions: [number, number][] = stops
-    .filter((s) => s.latitude != null && s.longitude != null)
-    .map((s) => [s.latitude as number, s.longitude as number]);
-
-  const roadRoute = useRoadRoute(geocodedPositions);
-
   if (!open) return null;
 
-  const addStop = () => setStops((prev) => [...prev, makeStop()]);
-  const removeStop = (key: string) => setStops((prev) => prev.filter((s) => s.key !== key));
-  const updateStop = (key: string, patch: Partial<StopForm>) =>
-    setStops((prev) => prev.map((s) => (s.key === key ? { ...s, ...patch } : s)));
+  const resetAndClose = () => {
+    setStep(0);
+    setSelectedTripIds([]);
+    setStops([]);
+    setDriverId("");
+    setVehicleId("");
+    setLoads({});
+    setPickupDateTime("");
+    setRouteName("");
+    onClose();
+  };
 
-  // Editing the address after a successful geocode invalidates the coordinates —
-  // lat/lon must only ever come from a real geocode response, never a stale one.
-  const updateAddressField = (key: string, patch: Partial<StopForm>) =>
-    setStops((prev) =>
-      prev.map((s) =>
-        s.key === key
-          ? { ...s, ...patch, latitude: null, longitude: null, errorRadius: null, geocodeStatus: "idle" }
-          : s,
-      ),
-    );
-
-  const moveStop = (index: number, direction: -1 | 1) => {
-    setStops((prev) => {
-      const target = index + direction;
-      if (target < 0 || target >= prev.length) return prev;
-      const next = [...prev];
-      [next[index], next[target]] = [next[target], next[index]];
+  const toggleTrip = (tripId: string) => {
+    setSelectedTripIds((prev) => {
+      const next = prev.includes(tripId) ? prev.filter((id) => id !== tripId) : [...prev, tripId];
+      setStops(buildDefaultStops(next));
       return next;
     });
   };
 
-  const locateStop = async (stop: StopForm) => {
-    const address = stopAddress(stop);
-    if (!address) return;
-
-    updateStop(stop.key, { geocodeStatus: "loading" });
-    try {
-      const result = await geocodeAddress(address);
-      updateStop(stop.key, {
-        latitude: result.lat,
-        longitude: result.lng,
-        errorRadius: result.error_radius,
-        geocodeStatus: "success",
-      });
-    } catch {
-      updateStop(stop.key, { geocodeStatus: "error" });
-    }
+  const moveStop = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= stops.length) return;
+    const next = [...stops];
+    [next[index], next[target]] = [next[target], next[index]];
+    if (precedenceViolation(next)) return;
+    setStops(next);
   };
 
-  const allStopsGeocoded = stops.length >= 2 && stops.every((s) => s.latitude != null && s.longitude != null);
+  const updateLoad = (tripId: string, patch: Partial<TripLoad>) =>
+    setLoads((prev) => ({ ...prev, [tripId]: { ...(prev[tripId] ?? { weightKg: "", value: "" }), ...patch } }));
 
-  const optimizeRoute = async () => {
-    if (!allStopsGeocoded) return;
-
-    // Snapshot the current (pre-optimization) real road-route numbers to diff against the result.
-    const beforeDistanceKm = roadRoute.distanceKm;
-    const beforeDurationHours = roadRoute.durationHours;
-
-    setIsOptimizing(true);
-    setOptimizeError(null);
-    try {
-      const result = await optimizeRouteOrder(
-        stops.map((s) => ({ key: s.key, latitude: s.latitude as number, longitude: s.longitude as number })),
-      );
-      const byKey = new Map(stops.map((s) => [s.key, s]));
-      const reordered = result.order
-        .map((key) => byKey.get(key))
-        .filter((s): s is StopForm => s !== undefined);
-      setStops(reordered);
-
-      const afterDistanceKm = result.total_distance_meters / 1000;
-      const afterDurationMin = result.total_duration_seconds / 60;
-
-      if (beforeDistanceKm != null && beforeDurationHours != null) {
-        const savedDistanceKm = beforeDistanceKm - afterDistanceKm;
-        const savedMinutes = beforeDurationHours * 60 - afterDurationMin;
-
-        if (savedDistanceKm > 0.5 || savedMinutes > 0.5) {
-          showToast(
-            `Route optimized: saved ${savedDistanceKm > 0.5 ? `${Math.round(savedDistanceKm)} km` : ""}${
-              savedDistanceKm > 0.5 && savedMinutes > 0.5 ? " and " : ""
-            }${savedMinutes > 0.5 ? `${Math.round(savedMinutes)} min` : ""}`,
-            "success",
-          );
-        } else {
-          showToast("Route optimized — this order was already the fastest.", "info");
-        }
-      } else {
-        showToast("Route optimized.", "success");
-      }
-    } catch {
-      setOptimizeError("Couldn't optimize the route. Try again.");
-      showToast("Couldn't optimize the route. Try again.", "error");
-    } finally {
-      setIsOptimizing(false);
-    }
+  const canContinue = (): boolean => {
+    if (step === 0) return selectedTripIds.length >= 2;
+    if (step === 1) return Boolean(selectedDriver);
+    if (step === 2) return Boolean(selectedVehicle);
+    if (step === 3) return allWeightsEntered && !exceedsCapacity;
+    return pickupDateTime.trim() !== "";
   };
 
-  const totalDistanceKm = roadRoute.distanceKm ?? 0;
-  const estDurationHours = roadRoute.durationHours ?? 0;
-  const estTolls = totalDistanceKm * TOLL_RATE_PER_KM_INR;
-  const hasUngeocodedStops = stops.length > 1 && geocodedPositions.length < stops.length;
+  const mutationErrorMessage =
+    mutation.isError && isAxiosError(mutation.error) && typeof mutation.error.response?.data?.detail === "string"
+      ? mutation.error.response.data.detail
+      : mutation.isError
+        ? "Something went wrong assigning this route. Please try again."
+        : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden">
         <div className="flex items-start justify-between px-6 py-5 border-b border-gray-100">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Create multi-stop route</h2>
-            <p className="text-sm text-gray-500 mt-0.5">
-              Add stops, reorder them, and let the optimizer find the best sequence.
-            </p>
+            <h2 className="text-lg font-semibold text-gray-900">Create Route</h2>
+            <p className="text-sm text-gray-500 mt-0.5">Group trips into a dispatched run — driver, vehicle and pickup time in one go.</p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+          <button onClick={resetAndClose} className="text-gray-400 hover:text-gray-600">
             <IconX />
           </button>
         </div>
 
+        <div className="px-6 pt-5">
+          <StepIndicator current={step} />
+        </div>
+
         <div className="flex-1 overflow-y-auto px-6 py-5 grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="space-y-4">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={addStop}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-teal-600 text-white text-sm font-medium hover:bg-teal-700"
-              >
-                <IconPlus />
-                Add stop
-              </button>
-              <button
-                onClick={optimizeRoute}
-                disabled={!allStopsGeocoded || isOptimizing}
-                title={!allStopsGeocoded ? "Locate every stop first to enable optimization" : undefined}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <IconSparkle className={isOptimizing ? "animate-spin" : ""} />
-                {isOptimizing ? "Optimizing…" : "Optimize route"}
-              </button>
-            </div>
-            {optimizeError && <p className="text-xs text-red-600">{optimizeError}</p>}
-
-            <div className="space-y-3">
-              {stops.map((stop, index) => (
-                <div key={stop.key} className="border border-gray-200 rounded-xl p-3">
-                  <div className="flex items-start gap-3">
-                    <span className="w-6 h-6 rounded-full bg-sky-100 text-sky-700 text-xs font-semibold flex items-center justify-center shrink-0 mt-0.5">
-                      {index + 1}
-                    </span>
-
-                    <div className="flex-1 space-y-2">
-                      <input
-                        placeholder="Location name (e.g. Rotterdam)"
-                        className="w-full text-sm font-medium text-gray-900 border-b border-transparent focus:border-gray-300 focus:outline-none py-0.5"
-                        value={stop.locationName}
-                        onChange={(e) => updateAddressField(stop.key, { locationName: e.target.value })}
-                      />
-                      <input
-                        placeholder="Address detail (e.g. Maasvlakte Terminal 4)"
-                        className="w-full text-sm text-gray-500 border-b border-transparent focus:border-gray-300 focus:outline-none py-0.5"
-                        value={stop.addressDetail}
-                        onChange={(e) => updateAddressField(stop.key, { addressDetail: e.target.value })}
-                      />
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => locateStop(stop)}
-                          disabled={!stopAddress(stop) || stop.geocodeStatus === "loading"}
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-gray-200 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          <IconMapPin className={stop.geocodeStatus === "loading" ? "animate-pulse" : ""} />
-                          {stop.geocodeStatus === "loading" ? "Locating…" : "Locate"}
-                        </button>
-
-                        {stop.geocodeStatus === "success" && stop.latitude != null && stop.longitude != null && (
-                          <span className="text-xs text-emerald-600">
-                            📍 {stop.latitude.toFixed(4)}, {stop.longitude.toFixed(4)}
-                            {stop.errorRadius != null && ` (±${stop.errorRadius}m)`}
-                          </span>
-                        )}
-                        {stop.geocodeStatus === "error" && (
-                          <span className="text-xs text-red-600">Couldn't locate this address</span>
-                        )}
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-2 pt-1">
-                        <select
-                          value={stop.stopType}
-                          onChange={(e) => updateStop(stop.key, { stopType: e.target.value as StopType })}
-                          className="px-2.5 py-1.5 rounded-lg border border-gray-200 text-sm text-gray-700 bg-white"
-                        >
-                          {stopTypeOptions.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col gap-1 shrink-0">
-                      <button
-                        onClick={() => moveStop(index, -1)}
-                        disabled={index === 0}
-                        className="p-1.5 rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
-                      >
-                        <IconArrowUp />
-                      </button>
-                      <button
-                        onClick={() => moveStop(index, 1)}
-                        disabled={index === stops.length - 1}
-                        className="p-1.5 rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
-                      >
-                        <IconArrowDown />
-                      </button>
-                      <button
-                        onClick={() => removeStop(stop.key)}
-                        className="p-1.5 rounded-md border border-gray-200 text-red-500 hover:bg-red-50"
-                      >
-                        <IconTrash />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-
-              {stops.length === 0 && (
-                <p className="text-sm text-gray-400 text-center py-6">No stops yet — add one to get started.</p>
-              )}
-            </div>
+          <div>
+            {step === 0 && (
+              <TripsStep
+                trips={trips ?? []}
+                isLoading={tripsLoading}
+                selectedTripIds={selectedTripIds}
+                onToggleTrip={toggleTrip}
+                stops={stops}
+                onMoveStop={moveStop}
+              />
+            )}
+            {step === 1 && (
+              <DriverStep
+                drivers={drivers ?? []}
+                isLoading={driversLoading}
+                selectedDriverId={driverId}
+                onSelectDriver={setDriverId}
+              />
+            )}
+            {step === 2 && (
+              <VehicleStep
+                vehicles={vehicles ?? []}
+                isLoading={vehiclesLoading}
+                selectedVehicleId={vehicleId}
+                onSelectVehicle={setVehicleId}
+              />
+            )}
+            {step === 3 && (
+              <LoadStep
+                trips={selectedTripIds.map((id) => tripsById.get(id)).filter((t): t is Trip => Boolean(t))}
+                loads={loads}
+                onUpdateLoad={updateLoad}
+                vehicleCapacityKg={selectedVehicle?.load_capacity_kg ?? null}
+                totalLoadKg={totalLoadKg}
+                exceedsCapacity={exceedsCapacity}
+              />
+            )}
+            {step === 4 && (
+              <ReviewStep
+                trips={selectedTripIds.map((id) => tripsById.get(id)).filter((t): t is Trip => Boolean(t))}
+                driver={selectedDriver}
+                vehicle={selectedVehicle}
+                loads={loads}
+                totalLoadKg={totalLoadKg}
+                distanceKm={roadRoute.distanceKm ?? 0}
+                durationHours={roadRoute.durationHours ?? 0}
+                pickupDateTime={pickupDateTime}
+                onPickupDateTimeChange={setPickupDateTime}
+                routeName={routeName}
+                onRouteNameChange={setRouteName}
+                reordered={reordered}
+              />
+            )}
           </div>
 
-          <div className="flex flex-col gap-4">
-            <RouteMapPreview
-              stops={stops
-                .map((stop, index) => ({ stop, sequence: index + 1 }))
-                .filter(({ stop }) => stop.latitude != null && stop.longitude != null)
-                .map(({ stop, sequence }) => ({
-                  key: stop.key,
-                  lat: stop.latitude as number,
-                  lng: stop.longitude as number,
-                  label: stop.locationName || `Stop ${sequence}`,
-                  sequence,
-                }))}
-              routeGeometry={roadRoute.geometry}
-              isRouteLoading={roadRoute.isLoading}
-              isRouteError={roadRoute.isError}
-            />
-
-            <div className="grid grid-cols-3 gap-3">
-              <SummaryStat label="Total distance" value={`${Math.round(totalDistanceKm)} km`} />
-              <SummaryStat label="Est. duration" value={`${estDurationHours.toFixed(1)} h`} />
-              <SummaryStat label="Est. tolls" value={`₹${Math.round(estTolls)}`} />
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col h-[320px]">
+              <RouteMapPreview
+                stops={mapStops}
+                routeGeometry={roadRoute.geometry}
+                isRouteLoading={roadRoute.isLoading}
+                isRouteError={roadRoute.isError}
+                emptyLabel="Select trips to preview them on the map"
+              />
             </div>
-            {hasUngeocodedStops && (
-              <p className="text-xs text-amber-600 -mt-2">
-                Locate every stop to include it in the route distance/duration calculation.
+            <div className="grid grid-cols-2 gap-3">
+              <SummaryStat
+                label="Total distance"
+                value={roadRoute.distanceKm != null ? `${Math.round(roadRoute.distanceKm)} km` : "—"}
+              />
+              <SummaryStat
+                label="Est. duration"
+                value={roadRoute.durationHours != null ? `${roadRoute.durationHours.toFixed(1)} h` : "—"}
+              />
+            </div>
+            {selectedTripIds.length > 0 && roadRoute.distanceKm == null && !roadRoute.isLoading && (
+              <p className="text-xs text-amber-600">
+                Distance unavailable — some trips aren't geocoded, so the road route can't be drawn.
               </p>
             )}
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-100">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800">
-            Cancel
-          </button>
+        {mutationErrorMessage && (
+          <div className="mx-6 mb-3 px-4 py-2.5 rounded-lg bg-red-50 border border-red-100 text-sm text-red-700">
+            {mutationErrorMessage}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100">
           <button
-            onClick={() => mutation.mutate()}
-            disabled={mutation.isPending || stops.length === 0}
-            className="px-5 py-2 rounded-lg bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 disabled:opacity-50"
+            onClick={() => setStep((s) => Math.max(s - 1, 0))}
+            disabled={step === 0 || mutation.isPending}
+            className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800 disabled:text-gray-300 disabled:cursor-not-allowed"
           >
-            {mutation.isPending ? "Saving…" : "Save route"}
+            Back
           </button>
+
+          {step < LAST_STEP ? (
+            <button
+              onClick={() => setStep((s) => Math.min(s + 1, LAST_STEP))}
+              disabled={!canContinue()}
+              className="px-5 py-2 rounded-lg bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Continue
+            </button>
+          ) : (
+            <button
+              onClick={() => mutation.mutate()}
+              disabled={mutation.isPending || !canContinue()}
+              className="px-5 py-2 rounded-lg bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 disabled:opacity-50"
+            >
+              {mutation.isPending ? "Assigning…" : "Assign route"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StepIndicator({ current }: { current: number }) {
+  return (
+    <div className="flex items-center">
+      {STEP_LABELS.map((label, i) => (
+        <div key={label} className={`flex items-center ${i < STEP_LABELS.length - 1 ? "flex-1" : ""}`}>
+          <div className="flex items-center gap-2">
+            <span
+              className={`w-7 h-7 shrink-0 rounded-full flex items-center justify-center text-xs font-semibold ${
+                i < current
+                  ? "bg-emerald-500 text-white"
+                  : i === current
+                    ? "bg-teal-600 text-white"
+                    : "bg-gray-100 text-gray-400"
+              }`}
+            >
+              {i < current ? <IconCheck /> : i + 1}
+            </span>
+            <span className={`text-sm font-medium whitespace-nowrap ${i <= current ? "text-gray-900" : "text-gray-400"}`}>
+              {label}
+            </span>
+          </div>
+          {i < STEP_LABELS.length - 1 && (
+            <div className={`flex-1 h-px mx-3 ${i < current ? "bg-emerald-300" : "bg-gray-200"}`} />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+interface TripsStepProps {
+  trips: Trip[];
+  isLoading: boolean;
+  selectedTripIds: string[];
+  onToggleTrip: (tripId: string) => void;
+  stops: StopPreview[];
+  onMoveStop: (index: number, direction: -1 | 1) => void;
+}
+
+function TripsStep({ trips, isLoading, selectedTripIds, onToggleTrip, stops, onMoveStop }: TripsStepProps) {
+  return (
+    <div className="space-y-5">
+      <div>
+        <label className="block text-sm font-semibold text-gray-900 mb-2">Select trips to group (min 2)</label>
+        {isLoading && <p className="text-sm text-gray-400">Loading trips…</p>}
+        {!isLoading && trips.length === 0 && (
+          <p className="text-sm text-gray-400">No unassigned trips available — create a trip first.</p>
+        )}
+        <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
+          {trips.map((trip) => {
+            const selected = selectedTripIds.includes(trip.trip_id);
+            return (
+              <button
+                key={trip.trip_id}
+                type="button"
+                onClick={() => onToggleTrip(trip.trip_id)}
+                className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-lg border text-left transition-colors ${
+                  selected ? "border-teal-500 bg-teal-50" : "border-gray-200 hover:bg-gray-50"
+                }`}
+              >
+                <div>
+                  <div className="text-sm font-medium text-gray-900">
+                    {trip.trip_id} · {trip.origin ?? "—"} → {trip.destination ?? "—"}
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5">
+                    {trip.load_weight_kg != null ? `${trip.load_weight_kg.toLocaleString()} kg` : "No load yet"}
+                    {trip.planned_distance_km != null ? ` · ${Math.round(trip.planned_distance_km)} km` : ""}
+                  </div>
+                </div>
+                <span
+                  className={`w-5 h-5 shrink-0 rounded border flex items-center justify-center ${
+                    selected ? "bg-teal-600 border-teal-600 text-white" : "border-gray-300 text-transparent"
+                  }`}
+                >
+                  <IconCheck />
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {stops.length >= 2 && (
+        <div>
+          <label className="block text-sm font-semibold text-gray-900 mb-2">
+            Stop sequence <span className="text-gray-400 font-normal">(reorder with arrows — a delivery can never precede its own pickup)</span>
+          </label>
+          <div className="space-y-2">
+            {stops.map((stop, index) => {
+              const trip = trips.find((t) => t.trip_id === stop.tripId);
+              return (
+                <div key={`${stop.tripId}:${stop.stopType}`} className="flex items-center gap-3 px-4 py-2.5 rounded-lg border border-gray-200 bg-white">
+                  <span className="w-6 h-6 rounded-full bg-sky-100 text-sky-700 text-xs font-semibold flex items-center justify-center shrink-0">
+                    {index + 1}
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[11px] font-medium shrink-0 ${
+                      stop.stopType === "pickup" ? "bg-sky-50 text-sky-700" : "bg-emerald-50 text-emerald-700"
+                    }`}
+                  >
+                    {stop.stopType === "pickup" ? "Pickup" : "Delivery"}
+                  </span>
+                  <span className="text-sm text-gray-700 truncate">
+                    {stop.stopType === "pickup" ? trip?.origin ?? "—" : trip?.destination ?? "—"}
+                    <span className="text-gray-400"> · {stop.tripId}</span>
+                  </span>
+                  <div className="flex gap-1 ml-auto shrink-0">
+                    <button
+                      onClick={() => onMoveStop(index, -1)}
+                      disabled={index === 0}
+                      className="p-1.5 rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      <IconArrowUp />
+                    </button>
+                    <button
+                      onClick={() => onMoveStop(index, 1)}
+                      disabled={index === stops.length - 1}
+                      className="p-1.5 rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      <IconArrowDown />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function statusBadgeStyle(status: string | null): string {
+  const s = (status ?? "").toLowerCase();
+  if (s.includes("avail") || s.includes("active")) return "bg-emerald-50 text-emerald-700";
+  if (s.includes("inactive") || s.includes("suspend")) return "bg-red-50 text-red-600";
+  if (!s) return "bg-gray-100 text-gray-500";
+  return "bg-amber-50 text-amber-700";
+}
+
+interface DriverStepProps {
+  drivers: DriverRosterItem[];
+  isLoading: boolean;
+  selectedDriverId: string;
+  onSelectDriver: (id: string) => void;
+}
+
+function DriverStep({ drivers, isLoading, selectedDriverId, onSelectDriver }: DriverStepProps) {
+  return (
+    <div>
+      <label className="block text-sm font-semibold text-gray-900 mb-2">Assign driver</label>
+      {isLoading && <p className="text-sm text-gray-400">Loading drivers…</p>}
+      {!isLoading && drivers.length === 0 && <p className="text-sm text-gray-400">No drivers found.</p>}
+      <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+        {drivers.map((driver) => {
+          const selected = driver.driver_id === selectedDriverId;
+          const unavailable = driver.is_on_trip;
+          const subtitleParts = [
+            driver.driver_id,
+            driver.experience_years != null ? `${driver.experience_years} yrs` : null,
+            driver.license_type,
+          ].filter(Boolean);
+
+          return (
+            <button
+              key={driver.driver_id}
+              type="button"
+              onClick={() => !unavailable && onSelectDriver(driver.driver_id)}
+              disabled={unavailable}
+              className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-lg border text-left transition-colors ${
+                selected
+                  ? "border-teal-500 bg-teal-50"
+                  : unavailable
+                    ? "border-gray-100 bg-gray-50 opacity-60 cursor-not-allowed"
+                    : "border-gray-200 hover:bg-gray-50"
+              }`}
+            >
+              <div>
+                <div className="text-sm font-medium text-gray-900">{driver.driver_name ?? driver.driver_id}</div>
+                <div className="text-xs text-gray-500 mt-0.5">{subtitleParts.join(" · ")}</div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {driver.rating != null && (
+                  <span className="flex items-center gap-1 px-2 py-1 rounded-full bg-amber-50 text-amber-600 text-xs font-medium">
+                    <IconStar />
+                    {driver.rating}
+                  </span>
+                )}
+                <span className={`px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
+                  driver.is_on_trip ? "bg-amber-50 text-amber-700" : statusBadgeStyle(driver.status)
+                }`}>
+                  {driver.is_on_trip ? "On Trip" : (driver.status ?? "Available")}
+                </span>
+                {driver.license_expiring_soon != null && (
+                  <span
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
+                      driver.license_expiring_soon ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-700"
+                    }`}
+                  >
+                    {driver.license_expiring_soon ? <IconAlertTriangle /> : <IconShield />}
+                    License
+                  </span>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+interface VehicleStepProps {
+  vehicles: VehicleRosterItem[];
+  isLoading: boolean;
+  selectedVehicleId: string;
+  onSelectVehicle: (id: string) => void;
+}
+
+function VehicleStep({ vehicles, isLoading, selectedVehicleId, onSelectVehicle }: VehicleStepProps) {
+  return (
+    <div>
+      <label className="block text-sm font-semibold text-gray-900 mb-2">Assign vehicle</label>
+      {isLoading && <p className="text-sm text-gray-400">Loading vehicles…</p>}
+      {!isLoading && vehicles.length === 0 && <p className="text-sm text-gray-400">No vehicles found.</p>}
+      <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+        {vehicles.map((vehicle) => {
+          const selected = vehicle.vehicle_id === selectedVehicleId;
+          const unavailable = vehicle.is_on_trip;
+          const subtitleParts = [
+            [vehicle.make, vehicle.model].filter(Boolean).join(" "),
+            vehicle.load_capacity_kg != null ? `${vehicle.load_capacity_kg.toLocaleString()} kg capacity` : null,
+            vehicle.fuel_type,
+          ].filter((part) => Boolean(part && part.trim()));
+
+          return (
+            <button
+              key={vehicle.vehicle_id}
+              type="button"
+              onClick={() => !unavailable && onSelectVehicle(vehicle.vehicle_id)}
+              disabled={unavailable}
+              className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-lg border text-left transition-colors ${
+                selected
+                  ? "border-teal-500 bg-teal-50"
+                  : unavailable
+                    ? "border-gray-100 bg-gray-50 opacity-60 cursor-not-allowed"
+                    : "border-gray-200 hover:bg-gray-50"
+              }`}
+            >
+              <div>
+                <div className="text-sm font-medium text-gray-900">
+                  {vehicle.vehicle_id} · {vehicle.vehicle_type ?? "—"}
+                </div>
+                <div className="text-xs text-gray-500 mt-0.5">{subtitleParts.join(" · ")}</div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {vehicle.is_on_trip && (
+                  <span className="px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-medium whitespace-nowrap">
+                    In Use
+                  </span>
+                )}
+                {vehicle.avg_kmpl_rated != null && (
+                  <span className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 text-xs font-medium whitespace-nowrap">
+                    <IconFuel />
+                    {vehicle.avg_kmpl_rated} km/l
+                  </span>
+                )}
+                {vehicle.service_due_soon && (
+                  <span className="px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-medium whitespace-nowrap">
+                    Service due soon
+                  </span>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+interface LoadStepProps {
+  trips: Trip[];
+  loads: Record<string, TripLoad>;
+  onUpdateLoad: (tripId: string, patch: Partial<TripLoad>) => void;
+  vehicleCapacityKg: number | null;
+  totalLoadKg: number;
+  exceedsCapacity: boolean;
+}
+
+function LoadStep({ trips, loads, onUpdateLoad, vehicleCapacityKg, totalLoadKg, exceedsCapacity }: LoadStepProps) {
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="block text-sm font-semibold text-gray-900 mb-1">Load per trip</label>
+        <p className="text-xs text-gray-400 mb-3">Each trip is separately-valued cargo even though they travel together.</p>
+      </div>
+
+      <div className="space-y-3">
+        {trips.map((trip) => (
+          <div key={trip.trip_id} className="border border-gray-200 rounded-xl p-4">
+            <div className="text-sm font-medium text-gray-900 mb-3">
+              {trip.trip_id} · {trip.origin ?? "—"} → {trip.destination ?? "—"}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Weight (kg)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={loads[trip.trip_id]?.weightKg ?? ""}
+                  onChange={(e) => onUpdateLoad(trip.trip_id, { weightKg: e.target.value })}
+                  placeholder="e.g. 8000"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Value (₹)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={loads[trip.trip_id]?.value ?? ""}
+                  onChange={(e) => onUpdateLoad(trip.trip_id, { value: e.target.value })}
+                  placeholder="e.g. 250000"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div
+        className={`px-4 py-3 rounded-lg border text-sm ${
+          exceedsCapacity ? "bg-red-50 border-red-100 text-red-700" : "bg-gray-50 border-gray-200 text-gray-600"
+        }`}
+      >
+        {vehicleCapacityKg != null ? (
+          exceedsCapacity ? (
+            <>
+              Combined load <strong>{totalLoadKg.toLocaleString()} kg</strong> exceeds this vehicle's{" "}
+              {vehicleCapacityKg.toLocaleString()} kg capacity — reduce a load or pick a different vehicle.
+            </>
+          ) : (
+            <>
+              Combined load <strong>{totalLoadKg.toLocaleString()} kg</strong> of{" "}
+              {vehicleCapacityKg.toLocaleString()} kg vehicle capacity
+              {totalLoadKg > 0 ? ` (${Math.round((totalLoadKg / vehicleCapacityKg) * 100)}%)` : ""}
+            </>
+          )
+        ) : (
+          <>Combined load: {totalLoadKg.toLocaleString()} kg</>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface ReviewStepProps {
+  trips: Trip[];
+  driver: DriverRosterItem | null;
+  vehicle: VehicleRosterItem | null;
+  loads: Record<string, TripLoad>;
+  totalLoadKg: number;
+  distanceKm: number;
+  durationHours: number;
+  pickupDateTime: string;
+  onPickupDateTimeChange: (value: string) => void;
+  routeName: string;
+  onRouteNameChange: (value: string) => void;
+  reordered: boolean;
+}
+
+function ReviewStep({
+  trips,
+  driver,
+  vehicle,
+  loads,
+  totalLoadKg,
+  distanceKm,
+  durationHours,
+  pickupDateTime,
+  onPickupDateTimeChange,
+  routeName,
+  onRouteNameChange,
+  reordered,
+}: ReviewStepProps) {
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="block text-sm text-gray-600 mb-1">Pickup time (shared by all trips on this route)</label>
+        <input
+          type="datetime-local"
+          value={pickupDateTime}
+          onChange={(e) => onPickupDateTimeChange(e.target.value)}
+          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+        />
+      </div>
+      <div>
+        <label className="block text-sm text-gray-600 mb-1">Route name (optional)</label>
+        <input
+          type="text"
+          value={routeName}
+          onChange={(e) => onRouteNameChange(e.target.value)}
+          placeholder="e.g. Rotterdam cluster run"
+          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+        />
+      </div>
+
+      <div className="border border-gray-200 rounded-xl p-4 space-y-3 text-sm">
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Trips</span>
+          <span className="font-medium text-gray-900">
+            {trips.map((t) => t.trip_id).join(", ")}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Driver</span>
+          <span className="font-medium text-gray-900">
+            {driver ? `${driver.driver_name ?? driver.driver_id}` : "—"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Vehicle</span>
+          <span className="font-medium text-gray-900">
+            {vehicle ? `${vehicle.vehicle_id} · ${vehicle.vehicle_type ?? "—"}` : "—"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Combined load</span>
+          <span className="font-medium text-gray-900">
+            {totalLoadKg.toLocaleString()} kg
+            {vehicle?.load_capacity_kg != null && totalLoadKg > 0
+              ? ` / ${vehicle.load_capacity_kg.toLocaleString()} kg`
+              : ""}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Est. distance</span>
+          <span className="font-medium text-gray-900">{Math.round(distanceKm)} km</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Est. duration</span>
+          <span className="font-medium text-gray-900">{durationHours.toFixed(1)} h</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Stop order</span>
+          <span className={`font-medium ${reordered ? "text-amber-600" : "text-gray-900"}`}>
+            {reordered ? "Custom order" : "Default (pickups → deliveries)"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Per-trip loads</span>
+          <span className="font-medium text-gray-900">
+            {trips
+              .map((t) => {
+                const w = loads[t.trip_id]?.weightKg;
+                return w ? `${t.trip_id}: ${Number(w).toLocaleString()} kg` : t.trip_id;
+              })
+              .join(" · ")}
+          </span>
         </div>
       </div>
     </div>
@@ -375,4 +816,3 @@ function SummaryStat({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-

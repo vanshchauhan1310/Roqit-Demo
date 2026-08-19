@@ -56,10 +56,6 @@ class LoadExceedsCapacityError(ValueError):
     pass
 
 
-class RouteNotFoundError(ValueError):
-    pass
-
-
 def _apply_auto_status_transition(trip: Trip, now: datetime) -> bool:
     """Advances Scheduled -> In-Transit -> Delivered based on pickup_time/actual_delivery_time vs now.
 
@@ -87,16 +83,6 @@ def _generate_trip_id() -> str:
 
 async def create_trip(db: Session, trip_in: TripCreate) -> Trip:
     trip_data = trip_in.model_dump()
-
-    # Popped out here - not a Trip column, and linked to the Trip atomically
-    # below (same commit) instead of via a separate follow-up request, which
-    # used to leave a trip permanently unlinked if that second call ever failed.
-    route_id = trip_data.pop("route_id", None)
-    route = None
-    if route_id:
-        route = db.get(Route, route_id)
-        if route is None:
-            raise RouteNotFoundError(f"Route {route_id} not found")
 
     vehicle_id = trip_data.get("vehicle_id")
     load_weight_kg = trip_data.get("load_weight_kg")
@@ -133,9 +119,6 @@ async def create_trip(db: Session, trip_in: TripCreate) -> Trip:
 
     trip = Trip(trip_id=_generate_trip_id(), status="scheduled", **trip_data)
     db.add(trip)
-    if route is not None:
-        route.trip_id = trip.trip_id
-        db.add(route)
     try:
         db.commit()
     except IntegrityError as exc:
@@ -143,6 +126,40 @@ async def create_trip(db: Session, trip_in: TripCreate) -> Trip:
         raise DuplicateIdError(f"Trip {trip.trip_id} already exists") from exc
     db.refresh(trip)
     return trip
+
+
+def list_unassigned_trips(db: Session) -> list[Trip]:
+    """Return trips that are not yet assigned to any route (no RouteStop references them)."""
+    # Subquery to find trip_ids that have at least one RouteStop
+    assigned_trip_ids = (
+        db.query(RouteStop.trip_id)
+        .filter(RouteStop.trip_id.isnot(None))
+        .distinct()
+        .subquery()
+    )
+
+    stop_count_subq = _stop_count_subquery()
+
+    query = db.query(Trip, stop_count_subq.label("stop_count")).filter(
+        Trip.trip_id.notin_(select(assigned_trip_ids.c.trip_id))
+    )
+
+    rows = query.order_by(Trip.pickup_time.desc()).all()
+
+    now = datetime.now(timezone.utc)
+    trips = []
+    any_changed = False
+    for trip, stop_count in rows:
+        if _apply_auto_status_transition(trip, now):
+            db.add(trip)
+            any_changed = True
+        trip.stop_count = stop_count or 0
+        trips.append(trip)
+
+    if any_changed:
+        db.commit()
+
+    return trips
 
 
 def _stop_count_subquery():

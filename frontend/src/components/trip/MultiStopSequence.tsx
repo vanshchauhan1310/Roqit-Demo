@@ -47,6 +47,7 @@ export function MultiStopSequence({ stopProgress }: MultiStopSequenceProps) {
               <div className="text-xs text-gray-500 mt-0.5">{stop.address ?? "—"}</div>
               <div className="text-xs text-gray-400 mt-0.5">
                 {capitalize(stop.stop_type)} · {formatWindow(stop.window_start, stop.window_end)}
+                {stop.eta && ` · ETA ${formatTime(new Date(stop.eta))}`}
                 {arrivedAt && ` · arrived ${formatTime(arrivedAt)}`}
               </div>
             </div>

@@ -6,3 +6,18 @@ export interface TripKpiSummary {
   active_trips: number;
   delayed_trips: number;
 }
+
+export interface StatusBucket {
+  status: string;
+  count: number;
+}
+
+export interface DelayBucket {
+  label: string;
+  count: number;
+}
+
+export interface TripKpiDetail extends TripKpiSummary {
+  status_distribution: StatusBucket[];
+  delay_buckets: DelayBucket[];
+}

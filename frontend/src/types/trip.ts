@@ -26,6 +26,8 @@ export interface Trip {
   delay_minutes: number | null;
   profit_margin: number | null;
   stop_count: number;
+  load_weight_kg: number | null;
+  load_value: number | null;
 }
 
 export interface TripFilterOptions {
@@ -38,23 +40,21 @@ export interface TripFilters {
   status?: string;
   driver?: string;
   pickupDate?: string; // YYYY-MM-DD
+  unassigned?: boolean;
 }
 
 export interface CreateTripPayload {
-  driver_id: string;
+  driver_id?: string | null;
   driver_name?: string | null;
-  vehicle_id: string;
+  vehicle_id?: string | null;
   vehicle_type?: string | null;
   origin: string;
   destination: string;
-  // Linked server-side in the same create request, so the trip can never be
-  // saved without its route attached.
-  route_id?: string | null;
   gps_start_lat?: number | null;
   gps_start_lon?: number | null;
   gps_end_lat?: number | null;
   gps_end_lon?: number | null;
-  pickup_time: string;
+  pickup_time?: string | null;
   planned_delivery_time?: string | null;
   planned_distance_km?: number | null;
   load_weight_kg?: number | null;

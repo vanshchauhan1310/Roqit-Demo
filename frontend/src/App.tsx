@@ -4,6 +4,7 @@ import { Topbar } from "@/components/common/Topbar";
 import { ToastProvider } from "@/components/common/Toast";
 import { TripsPage } from "@/pages/TripsPage";
 import { TripDetailPage } from "@/pages/TripDetailPage";
+import { RouteDetailPage } from "@/pages/RouteDetailPage";
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
               <Route path="/" element={<Navigate to="/trips" replace />} />
               <Route path="/trips" element={<TripsPage />} />
               <Route path="/trips/:tripId" element={<TripDetailPage />} />
+              <Route path="/routes/:routeId" element={<RouteDetailPage />} />
             </Routes>
           </main>
         </div>

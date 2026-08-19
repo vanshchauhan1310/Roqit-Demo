@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta
 
+import httpx
+
+from app.services import ml_client
 from app.services.osrm_client import get_route_duration_hours
 from app.services.weather_client import get_ml_weather_condition
 
@@ -49,17 +52,44 @@ async def _base_duration_hours(
     return None
 
 
+async def _ml_eta_duration_minutes(trip) -> float | None:
+    """Calls the ML service's /predict/eta endpoint (RandomForest model). Returns
+    None when the model isn't trained yet (503), the service is down, or the trip
+    lacks the inputs, so the caller can fall back to the rule-based ETA."""
+    if trip.planned_distance_km is None:
+        return None
+    try:
+        result = await ml_client.predict_eta(
+            {
+                "distance_km": trip.planned_distance_km,
+                "num_stops": trip.stop_count or 0,
+                "hour_of_day": trip.pickup_time.hour if trip.pickup_time else 12,
+                "day_of_week": trip.pickup_time.weekday() if trip.pickup_time else 0,
+                "avg_historical_speed_kph": 55.0,
+            }
+        )
+        return float(result["predicted_duration_minutes"])
+    except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException, KeyError):
+        return None
+
+
 async def predict_eta_for_trip(trip) -> dict:
-    """Rule-based (NOT ML) ETA: real OSRM base duration, adjusted by a hand-coded
-    weather multiplier at the trip's start coordinates.
+    """ETA for a trip: the ML model's duration prediction (minutes) when the model
+    is available, otherwise a rule-based estimate - real OSRM base duration adjusted
+    by a hand-coded weather multiplier at the trip's start coordinates.
 
     Distinct from /api/predictions/expected-delay, which is the ML regressor's
-    prediction from the full 25-feature contract - this is the simpler,
-    weather-rule-only estimate described as "weather_eta" in the architecture.
+    prediction from the full 25-feature contract - this is the lighter-weight
+    trip-duration ETA shown in the UI.
     """
-    base_hours = await _base_duration_hours(
-        trip.gps_start_lat, trip.gps_start_lon, trip.gps_end_lat, trip.gps_end_lon, trip.planned_distance_km
-    )
+    base_hours = None
+    ml_duration_minutes = await _ml_eta_duration_minutes(trip)
+    if ml_duration_minutes is not None:
+        base_hours = ml_duration_minutes / 60
+    else:
+        base_hours = await _base_duration_hours(
+            trip.gps_start_lat, trip.gps_start_lon, trip.gps_end_lat, trip.gps_end_lon, trip.planned_distance_km
+        )
 
     if base_hours is None:
         return {

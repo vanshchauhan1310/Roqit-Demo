@@ -39,15 +39,16 @@ interface RouteMapPreviewProps {
   routeGeometry: [number, number][] | null;
   isRouteLoading: boolean;
   isRouteError: boolean;
+  emptyLabel?: string;
 }
 
-export function RouteMapPreview({ stops, routeGeometry, isRouteLoading, isRouteError }: RouteMapPreviewProps) {
+export function RouteMapPreview({ stops, routeGeometry, isRouteLoading, isRouteError, emptyLabel }: RouteMapPreviewProps) {
   const positions: [number, number][] = stops.map((s) => [s.lat, s.lng]);
 
   if (stops.length === 0) {
     return (
       <div className="flex-1 min-h-[220px] rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center text-sm text-gray-400">
-        Locate stops to preview them on the map
+        {emptyLabel ?? "Locate stops to preview them on the map"}
       </div>
     );
   }

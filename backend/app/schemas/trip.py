@@ -76,22 +76,22 @@ class TripFilterOptions(BaseModel):
 
 
 class TripCreate(BaseModel):
-    """Schema for creating a new trip — only fields the user actually provides."""
-    driver_id: str
+    """A Trip is now just a single pickup + single drop (origin/destination) —
+    driver, vehicle, and pickup_time are assigned later at the Route level
+    (RouteAssignRequest) once this trip is grouped with others into a route."""
+
+    driver_id: Optional[str] = None
     driver_name: Optional[str] = None
-    vehicle_id: str
+    vehicle_id: Optional[str] = None
     vehicle_type: Optional[str] = None
     origin: str
     destination: str
-    # Linked server-side in the same create_trip call (not a separate follow-up
-    # request) so a trip can never end up saved without its route attached.
-    route_id: Optional[str] = None
     gps_start_lat: Optional[float] = None
     gps_start_lon: Optional[float] = None
     gps_end_lat: Optional[float] = None
     gps_end_lon: Optional[float] = None
     planned_distance_km: Optional[float] = None
-    pickup_time: datetime
+    pickup_time: Optional[datetime] = None
     planned_delivery_time: Optional[datetime] = None
     load_weight_kg: Optional[int] = None
     load_value: Optional[float] = None

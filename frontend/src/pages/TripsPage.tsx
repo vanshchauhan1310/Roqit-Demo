@@ -1,20 +1,42 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { KpiCards } from "@/components/trip/KpiCards";
 import { TripsToolbar } from "@/components/trip/TripsToolbar";
-import { TripsTable } from "@/components/trip/TripsTable";
-import { TripsPagination } from "@/components/trip/TripsPagination";
+import { RoutesTable } from "@/components/trip/RoutesTable";
 import { CreateTripModal } from "@/components/trip/CreateTripModal";
 import { CreateRouteModal } from "@/components/trip/CreateRouteModal";
 import { IconPlus, IconRoute } from "@/components/common/icons";
-import { useTrips, TRIPS_PAGE_SIZE } from "@/hooks/useTrips";
-import { useTripFilterOptions } from "@/hooks/useTripFilterOptions";
+import { useRoutes } from "@/hooks/useRoutes";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import type { TripFilters } from "@/types/trip";
+import type { Route } from "@/types/route";
+
+function routeMatches(route: Route, search: string, status: string, driver: string, pickupDate: string): boolean {
+  const q = search.toLowerCase();
+  if (status && route.status?.toLowerCase() !== status.toLowerCase()) return false;
+  if (driver && route.driver_id !== driver) return false;
+  if (pickupDate && route.pickup_time) {
+    const day = new Date(route.pickup_time).toISOString().slice(0, 10);
+    if (day !== pickupDate) return false;
+  }
+  if (q) {
+    const haystack = [
+      route.name,
+      route.route_id,
+      route.driver_id,
+      route.vehicle_id,
+      ...route.stops.map((s) => s.trip_id),
+      ...route.stops.map((s) => s.address),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    if (!haystack.includes(q)) return false;
+  }
+  return true;
+}
 
 export function TripsPage() {
   const [createTripOpen, setCreateTripOpen] = useState(false);
   const [createRouteOpen, setCreateRouteOpen] = useState(false);
-  const [page, setPage] = useState(1);
 
   const [search, setSearch] = useState("");
   const [pickupDate, setPickupDate] = useState("");
@@ -23,20 +45,23 @@ export function TripsPage() {
 
   const debouncedSearch = useDebouncedValue(search);
 
-  const filters: TripFilters = {
-    search: debouncedSearch || undefined,
-    status: status || undefined,
-    driver: driver || undefined,
-    pickupDate: pickupDate || undefined,
-  };
+  const { data: routes, isLoading, isError } = useRoutes();
 
-  const { data: trips, isLoading, isError, isPlaceholderData } = useTrips(page, filters);
-  const { data: filterOptions } = useTripFilterOptions();
+  const filteredRoutes = useMemo(() => {
+    const all = routes ?? [];
+    if (!debouncedSearch && !status && !driver && !pickupDate) return all;
+    return all.filter((r) => routeMatches(r, debouncedSearch, status, driver, pickupDate));
+  }, [routes, debouncedSearch, status, driver, pickupDate]);
 
-  const updateFilter = (setter: (value: string) => void) => (value: string) => {
-    setter(value);
-    setPage(1);
-  };
+  const statusOptions = useMemo(
+    () => Array.from(new Set((routes ?? []).map((r) => r.status).filter((s): s is string => Boolean(s)))).sort(),
+    [routes],
+  );
+
+  const driverOptions = useMemo(
+    () => Array.from(new Set((routes ?? []).map((r) => r.driver_id).filter((d): d is string => Boolean(d)))).sort(),
+    [routes],
+  );
 
   return (
     <div className="space-y-6">
@@ -44,7 +69,7 @@ export function TripsPage() {
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Trips</h1>
           <p className="text-sm text-gray-500 mt-1">
-            One trip, five intelligence lenses — routes, vehicles, drivers, live ops and KPIs.
+            Grouped trips as dispatched routes — driver, vehicle, pickup time and stop sequence.
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
@@ -68,44 +93,31 @@ export function TripsPage() {
       <KpiCards />
       <TripsToolbar
         search={search}
-        onSearchChange={updateFilter(setSearch)}
+        onSearchChange={setSearch}
         pickupDate={pickupDate}
-        onPickupDateChange={updateFilter(setPickupDate)}
+        onPickupDateChange={setPickupDate}
         status={status}
-        onStatusChange={updateFilter(setStatus)}
-        statusOptions={filterOptions?.statuses ?? []}
+        onStatusChange={setStatus}
+        statusOptions={statusOptions}
         driver={driver}
-        onDriverChange={updateFilter(setDriver)}
-        driverOptions={filterOptions?.drivers ?? []}
+        onDriverChange={setDriver}
+        driverOptions={driverOptions}
       />
 
-      {isLoading && <p className="text-sm text-gray-500">Loading trips…</p>}
-      {isError && <p className="text-sm text-red-600">Failed to load trips.</p>}
+      {isLoading && <p className="text-sm text-gray-500">Loading routes…</p>}
+      {isError && <p className="text-sm text-red-600">Failed to load routes.</p>}
 
-      {trips && (
-        <div className={`space-y-3 ${isPlaceholderData ? "opacity-60" : ""}`}>
-          {trips.length === 0 ? (
-            <p className="text-sm text-gray-500">No trips match these filters.</p>
+      {routes && (
+        <div className="space-y-3">
+          {filteredRoutes.length === 0 ? (
+            <p className="text-sm text-gray-500">No routes match these filters.</p>
           ) : (
-            <>
-              <TripsTable trips={trips} />
-              <TripsPagination
-                page={page}
-                pageSize={TRIPS_PAGE_SIZE}
-                rowCount={trips.length}
-                hasNextPage={trips.length === TRIPS_PAGE_SIZE}
-                onPageChange={setPage}
-              />
-            </>
+            <RoutesTable routes={filteredRoutes} />
           )}
         </div>
       )}
 
-      <CreateTripModal
-        open={createTripOpen}
-        onClose={() => setCreateTripOpen(false)}
-        onBuildRoute={() => setCreateRouteOpen(true)}
-      />
+      <CreateTripModal open={createTripOpen} onClose={() => setCreateTripOpen(false)} />
       <CreateRouteModal open={createRouteOpen} onClose={() => setCreateRouteOpen(false)} />
     </div>
   );

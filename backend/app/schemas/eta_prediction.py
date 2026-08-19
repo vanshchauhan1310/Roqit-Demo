@@ -4,7 +4,8 @@ from pydantic import BaseModel
 
 
 class EtaPredictionRead(BaseModel):
-    """Rule-based (not ML) weather-adjusted ETA — see eta_service.py."""
+    """ETA from the ML model when trained, else the rule-based weather-adjusted
+    estimate — see eta_service.py."""
 
     weather_condition: str | None = None
     weather_multiplier: float | None = None
