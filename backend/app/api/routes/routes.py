@@ -6,12 +6,19 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+<<<<<<< HEAD
 from app.models.optimization_audit import OptimizationRun
 from app.schemas.optimize import OptimizeFleetRequest, OptimizeFleetResponse, OptimizeRouteRequest, OptimizeRouteResponse
 from app.schemas.route import (
     RouteAssignRequest,
     RouteAssignTrip,
     FleetPlanCreateRequest,
+=======
+from app.schemas.optimize import OptimizeRouteRequest, OptimizeRouteResponse
+from app.schemas.route import (
+    RouteAssignRequest,
+    RouteAssignTrip,
+>>>>>>> d6b0b72 (Added Complete Fleet Pack)
     RouteCreate,
     RouteRead,
     RouteReorderRequest,
@@ -19,7 +26,11 @@ from app.schemas.route import (
     RouteStopRead,
     RouteUpdateStatus,
 )
+<<<<<<< HEAD
 from app.services import ml_client, route_service
+=======
+from app.services import route_service
+>>>>>>> d6b0b72 (Added Complete Fleet Pack)
 from app.services.route_optimizer import optimize_route
 from app.workers.lns_worker import create_lns_job, lns_worker
 
@@ -232,6 +243,40 @@ async def reorder_route_stops(route_id: uuid.UUID, reorder_in: RouteReorderReque
         raise HTTPException(status_code=400, detail=f"Precedence violation for trip {exc.trip_id}: delivery cannot come before pickup")
     except route_service.LoadExceedsVehicleCapacityError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post("/assign", response_model=RouteRead, status_code=201)
+async def assign_route(assign_in: RouteAssignRequest, db: Session = Depends(get_db)):
+    try:
+        route = route_service.assign_route(db, assign_in)
+    except route_service.InsufficientTripsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except route_service.TripNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except route_service.LoadExceedsVehicleCapacityError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    # Give every stop an ETA right away (first stop = pickup_time, then each
+    # leg's real OSRM duration adjusted for weather), so the stops are never
+    # eta-less after creation.
+    route.weather_eta = await route_service.compute_weather_eta(db, route)
+    # Propagate the route-level plan to the trips so the ML models have
+    # planned_delivery_time (and thus planned_duration_hours) to predict from.
+    route_service.propagate_planned_delivery_time(db, route, route.weather_eta)
+    return route
+
+
+@router.patch("/{route_id}/stops/reorder", response_model=RouteRead)
+async def reorder_route_stops(route_id: uuid.UUID, reorder_in: RouteReorderRequest, db: Session = Depends(get_db)):
+    route = route_service.get_route(db, route_id)
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+    try:
+        return route_service.reorder_stops(db, route, reorder_in.stop_ids)
+    except route_service.StopSetMismatchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except route_service.PrecedenceViolationError as exc:
+        raise HTTPException(status_code=400, detail=f"Precedence violation for trip {exc.trip_id}: delivery cannot come before pickup")
 
 
 @router.get("/{route_id}", response_model=RouteRead)

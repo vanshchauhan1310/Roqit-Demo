@@ -28,7 +28,10 @@ export interface Trip {
   stop_count: number;
   load_weight_kg: number | null;
   load_value: number | null;
+<<<<<<< HEAD
   route_id: string | null;
+=======
+>>>>>>> d6b0b72 (Added Complete Fleet Pack)
 }
 
 export interface TripFilterOptions {

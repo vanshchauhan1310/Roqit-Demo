@@ -4,7 +4,11 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createTrip } from "@/api/trips";
 import { geocodeAddress } from "@/api/geocode";
 import { useRoadRoute } from "@/hooks/useRoadRoute";
+<<<<<<< HEAD
 import { RouteMapPreview, type StopType } from "./RouteMapPreview";
+=======
+import { RouteMapPreview } from "./RouteMapPreview";
+>>>>>>> d6b0b72 (Added Complete Fleet Pack)
 import {
   IconMapPin,
   IconX,
@@ -47,6 +51,7 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
   const queryClient = useQueryClient();
 
   const mapStops = useMemo(() => {
+<<<<<<< HEAD
     const result: { key: string; lat: number; lng: number; label: string; sequence: number; type: StopType }[] = [];
     
     // Depot at pickup location (for trip creation, depot = pickup location)
@@ -61,6 +66,9 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
       });
     }
     
+=======
+    const result: { key: string; lat: number; lng: number; label: string; sequence: number }[] = [];
+>>>>>>> d6b0b72 (Added Complete Fleet Pack)
     if (pickup.latitude != null && pickup.longitude != null) {
       result.push({
         key: "pickup",
@@ -68,7 +76,10 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
         lng: pickup.longitude,
         label: pickup.locationName || "Pickup",
         sequence: 1,
+<<<<<<< HEAD
         type: "pickup",
+=======
+>>>>>>> d6b0b72 (Added Complete Fleet Pack)
       });
     }
     if (drop.latitude != null && drop.longitude != null) {
@@ -78,7 +89,10 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
         lng: drop.longitude,
         label: drop.locationName || "Drop",
         sequence: 2,
+<<<<<<< HEAD
         type: "delivery",
+=======
+>>>>>>> d6b0b72 (Added Complete Fleet Pack)
       });
     }
     return result;
@@ -115,6 +129,7 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
   };
 
   const bothGeocoded = pickup.latitude != null && pickup.longitude != null && drop.latitude != null && drop.longitude != null;
+<<<<<<< HEAD
   // planned_distance_km feeds delay/expected-delay/fuel-cost ML predictions
   // directly - a trip saved without it permanently fails those predictions
   // later (nothing backfills this field once the trip exists), so trip
@@ -124,6 +139,12 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
   const mutation = useMutation({
     mutationFn: async () => {
       if (!readyToCreate) throw new Error("Route distance must be resolved before creating this trip");
+=======
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      if (!bothGeocoded) throw new Error("Both pickup and drop must be geocoded");
+>>>>>>> d6b0b72 (Added Complete Fleet Pack)
       return createTrip({
         origin: pointAddress(pickup),
         destination: pointAddress(drop),
@@ -131,7 +152,11 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
         gps_start_lon: pickup.longitude,
         gps_end_lat: drop.latitude,
         gps_end_lon: drop.longitude,
+<<<<<<< HEAD
         planned_distance_km: roadRoute.distanceKm,
+=======
+        planned_distance_km: roadRoute.distanceKm ?? null,
+>>>>>>> d6b0b72 (Added Complete Fleet Pack)
       });
     },
     onSuccess: () => {
@@ -208,6 +233,7 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
                 value={roadRoute.durationHours != null ? `${roadRoute.durationHours.toFixed(1)} h` : "—"}
               />
             </div>
+<<<<<<< HEAD
             {bothGeocoded && roadRoute.isLoading && (
               <p className="text-xs text-gray-500">Calculating route distance…</p>
             )}
@@ -216,6 +242,10 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
                 Couldn't calculate a route distance for these points — try re-locating pickup or drop. A trip can't
                 be created without it (delay/fuel predictions depend on this field).
               </p>
+=======
+            {bothGeocoded && roadRoute.distanceKm == null && !roadRoute.isLoading && (
+              <p className="text-xs text-amber-600">Route distance unavailable — the trip can still be created.</p>
+>>>>>>> d6b0b72 (Added Complete Fleet Pack)
             )}
           </div>
         </div>
@@ -232,8 +262,12 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
           </button>
           <button
             onClick={() => mutation.mutate()}
+<<<<<<< HEAD
             disabled={mutation.isPending || !readyToCreate}
             title={bothGeocoded && !readyToCreate ? "Waiting for route distance to resolve" : undefined}
+=======
+            disabled={mutation.isPending || !bothGeocoded}
+>>>>>>> d6b0b72 (Added Complete Fleet Pack)
             className="px-5 py-2 rounded-lg bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 disabled:opacity-50"
           >
             {mutation.isPending ? "Creating…" : "Create Trip"}
