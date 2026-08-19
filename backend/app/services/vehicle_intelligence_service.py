@@ -31,10 +31,14 @@ _OVERDUE_THRESHOLD_PCT = 100
 # hash, not random) so it varies trip-to-trip the way a real toll route would.
 TOLL_COST_PER_KM_INR = 2.0
 
+# Demo-only: no live fuel-price feed yet, so fuel cost is estimated from the
+# vehicle's rated efficiency (distance / avg_kmpl_rated) at this fixed price.
+FUEL_PRICE_PER_L_INR = 90.0
 
-def _build_vehicle_summary(vehicle: Vehicle, db: Session) -> VehicleSummary:
+
+def _build_vehicle_summary(vehicle: Vehicle, db: Session, trip: Trip) -> VehicleSummary:
     fleet_status = db.get(RealtimeFleetStatus, vehicle.vehicle_id)
-    assigned = bool(fleet_status and fleet_status.current_trip_id)
+    assigned = bool(fleet_status and fleet_status.current_trip_id) or trip.vehicle_id == vehicle.vehicle_id
     return VehicleSummary(
         vehicle_id=vehicle.vehicle_id,
         vehicle_type=vehicle.vehicle_type,
@@ -85,10 +89,11 @@ def _build_fuel_efficiency(
         )
         fleet_avg_kmpl = round(avg, 2) if avg is not None else None
 
+    # "This trip (actual)" only fills once the driver records the fuel
+    # consumed at the end of the trip - no estimate fallback, because the
+    # rated figure below already covers what this vehicle should have used.
     this_trip_fuel_l = trip.fuel_consumed_l
-    this_trip_fuel_l_is_estimate = this_trip_fuel_l is None
-    if this_trip_fuel_l is None and trip.actual_distance_km and vehicle.avg_kmpl_rated:
-        this_trip_fuel_l = trip.actual_distance_km / vehicle.avg_kmpl_rated
+    this_trip_fuel_l_is_estimate = False
 
     return FuelEfficiencyComparison(
         this_trip_fuel_l=round(this_trip_fuel_l, 1) if this_trip_fuel_l is not None else None,
@@ -188,14 +193,15 @@ def _build_cost_snapshot(
     vehicle: Vehicle,
     trip: Trip,
     events: list[MaintenanceEvent],
-    predicted_fuel_liters: float | None,
 ) -> CostSnapshot:
     distance = trip.actual_distance_km or trip.planned_distance_km
 
     fuel_cost = trip.fuel_cost
     fuel_cost_is_estimate = fuel_cost is None
-    if fuel_cost is None and predicted_fuel_liters is not None and trip.fuel_price_per_l is not None:
-        fuel_cost = round(predicted_fuel_liters * trip.fuel_price_per_l, 2)
+    if fuel_cost is None and distance and vehicle.avg_kmpl_rated:
+        # Rated liters (distance / avg_kmpl_rated) at a hardcoded fuel price -
+        # replaced by the driver's actual fuel cost once the trip resolves.
+        fuel_cost = round((distance / vehicle.avg_kmpl_rated) * FUEL_PRICE_PER_L_INR, 2)
 
     toll_cost = trip.toll_cost
     toll_cost_is_estimate = toll_cost is None
@@ -251,9 +257,9 @@ async def get_vehicle_intelligence(db: Session, trip: Trip) -> VehicleIntelligen
     maintenance_status, events = _build_maintenance_status(db, vehicle)
 
     return VehicleIntelligenceRead(
-        vehicle=_build_vehicle_summary(vehicle, db),
+        vehicle=_build_vehicle_summary(vehicle, db, trip),
         load=_build_load_capacity(vehicle, trip),
         fuel_efficiency=_build_fuel_efficiency(db, vehicle, trip, predicted_fuel_liters),
         maintenance=maintenance_status,
-        cost=_build_cost_snapshot(db, vehicle, trip, events, predicted_fuel_liters),
+        cost=_build_cost_snapshot(db, vehicle, trip, events),
     )

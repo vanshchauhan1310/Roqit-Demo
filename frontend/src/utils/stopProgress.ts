@@ -17,15 +17,17 @@ const RESOLVED_STATUSES = new Set(["delivered", "delayed", "cancelled"]);
  * duration x the same weather multiplier eta_service uses), persisted on
  * stop.eta by route_service.compute_weather_eta — the SAME timeline the map
  * and stat cards are built from, not an independently-fabricated one. The
- * first stop has no computed eta (compute_weather_eta only walks legs from
- * stop 2 onward), so it falls back to the trip's own pickup_time.
+ * first stop's eta is the route pickup_time itself, and every later stop's
+ * eta accumulates leg durations from there.
  *
  * A stop only becomes "completed" once the current time has actually passed
  * its arrivedAt — not just because the trip's overall status is In-Transit.
  * That's what previously made every stop but the last flip to Completed the
  * moment a trip went In-Transit, regardless of whether its eta had passed.
- * Once the trip itself resolves (Delivered/Delayed/Cancelled), every stop is
- * treated as reached since the trip is over.
+ * The backend also lazily flips stop.status pending -> done once its eta
+ * passes, and we honor that as authoritative. Once the trip itself resolves
+ * (Delivered/Delayed/Cancelled), every stop is treated as reached since the
+ * trip is over.
  */
 export function deriveStopProgress(stops: RouteStop[], trip: Trip): StopProgress[] {
   const sorted = [...stops].sort((a, b) => a.sequence - b.sequence);
@@ -42,7 +44,10 @@ export function deriveStopProgress(stops: RouteStop[], trip: Trip): StopProgress
         ? new Date(trip.pickup_time)
         : null;
 
-    const reached = tripResolved || (arrivedAt != null && arrivedAt.getTime() <= now);
+    const reached =
+      tripResolved ||
+      stop.status === "done" ||
+      (arrivedAt != null && arrivedAt.getTime() <= now);
     if (!reached) {
       return { stop, arrivedAt: null, status: "pending" as const };
     }

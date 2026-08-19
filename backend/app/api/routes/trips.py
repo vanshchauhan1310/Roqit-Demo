@@ -1,14 +1,21 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.schemas.driver_intelligence import DriverIntelligenceRead
 from app.schemas.eta_prediction import EtaPredictionRead
 from app.schemas.fuel_cost import FuelCostEstimateRead, TripCostPredictionRead
 from app.schemas.trip import TripCreate, TripFilterOptions, TripOutcomeUpdate, TripRead, TripUpdateStatus
 from app.schemas.vehicle_intelligence import VehicleIntelligenceRead
-from app.services import eta_service, fuel_cost_service, trip_service, vehicle_intelligence_service
+from app.services import (
+    driver_intelligence_service,
+    eta_service,
+    fuel_cost_service,
+    trip_service,
+    vehicle_intelligence_service,
+)
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
@@ -21,8 +28,6 @@ async def create_trip(trip_in: TripCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail=str(exc))
     except trip_service.LoadExceedsCapacityError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    except trip_service.RouteNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("", response_model=list[TripRead])
@@ -33,8 +38,11 @@ def list_trips(
     status: str | None = None,
     driver: str | None = None,
     pickup_date: date | None = None,
+    unassigned: bool = Query(False, description="Return only trips not assigned to any route"),
     db: Session = Depends(get_db),
 ):
+    if unassigned:
+        return trip_service.list_unassigned_trips(db)
     return trip_service.list_trips(db, skip, limit, search, status, driver, pickup_date)
 
 
@@ -103,6 +111,17 @@ async def get_vehicle_intelligence(trip_id: str, db: Session = Depends(get_db)):
     result = await vehicle_intelligence_service.get_vehicle_intelligence(db, trip)
     if result is None:
         raise HTTPException(status_code=422, detail=f"Trip {trip_id} has no assigned vehicle")
+    return result
+
+
+@router.get("/{trip_id}/driver-intelligence", response_model=DriverIntelligenceRead)
+async def get_driver_intelligence(trip_id: str, db: Session = Depends(get_db)):
+    trip = trip_service.get_trip(db, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    result = driver_intelligence_service.get_driver_intelligence(db, trip)
+    if result is None:
+        raise HTTPException(status_code=422, detail=f"Trip {trip_id} has no assigned driver")
     return result
 
 

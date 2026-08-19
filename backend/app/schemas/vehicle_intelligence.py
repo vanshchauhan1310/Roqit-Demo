@@ -21,7 +21,7 @@ class LoadCapacity(BaseModel):
 
 class FuelEfficiencyComparison(BaseModel):
     # All 4 expressed in liters for this trip's distance, so they're directly comparable as bars.
-    this_trip_fuel_l: float | None  # trip.fuel_consumed_l if recorded, else actual_distance_km/avg_kmpl_rated
+    this_trip_fuel_l: float | None  # trip.fuel_consumed_l only - filled by driver at trip end
     this_trip_fuel_l_is_estimate: bool
     predicted_fuel_l: float | None  # fuel_l_xgboost_v1.pkl via fuel_cost_service
     rated_fuel_l: float | None  # distance / vehicle.avg_kmpl_rated

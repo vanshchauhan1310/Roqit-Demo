@@ -192,7 +192,7 @@ function FuelEfficiencyCard({ fuelEfficiency }: { fuelEfficiency: FuelEfficiency
       </div>
       {this_trip_fuel_l == null && (
         <p className="text-xs text-gray-400 mt-3">
-          "This trip (actual)" needs either recorded fuel consumption or a rated km/l figure to estimate from.
+          "This trip (actual)" fills once the driver records the fuel consumed at the end of the trip.
         </p>
       )}
     </div>

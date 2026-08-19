@@ -117,9 +117,13 @@ async def engineer_features(db: Session, trip: Trip) -> dict:
     driver = trip.driver
 
     if vehicle is None:
-        raise MissingFeatureDataError(f"Trip {trip.trip_id} has no assigned vehicle")
+        raise MissingFeatureDataError(
+            f"Trip {trip.trip_id} has no assigned vehicle - assign it to a route before running delay prediction"
+        )
     if driver is None:
-        raise MissingFeatureDataError(f"Trip {trip.trip_id} has no assigned driver")
+        raise MissingFeatureDataError(
+            f"Trip {trip.trip_id} has no assigned driver - assign it to a route before running delay prediction"
+        )
 
     live_weather = await get_ml_weather_condition(trip.gps_start_lat, trip.gps_start_lon)
     weather_condition = live_weather or trip.weather_condition

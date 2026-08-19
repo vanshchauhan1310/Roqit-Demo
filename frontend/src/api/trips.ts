@@ -1,6 +1,7 @@
 import { apiClient } from "./client";
 import type { CreateTripPayload, Trip, TripFilterOptions, TripFilters } from "@/types/trip";
 import type { VehicleIntelligence } from "@/types/vehicleIntelligence";
+import type { DriverIntelligence } from "@/types/driverIntelligence";
 
 export async function fetchTrips(skip = 0, limit = 100, filters: TripFilters = {}): Promise<Trip[]> {
   const { data } = await apiClient.get<Trip[]>("/trips", {
@@ -11,7 +12,15 @@ export async function fetchTrips(skip = 0, limit = 100, filters: TripFilters = {
       status: filters.status || undefined,
       driver: filters.driver || undefined,
       pickup_date: filters.pickupDate || undefined,
+      unassigned: filters.unassigned || undefined,
     },
+  });
+  return data;
+}
+
+export async function fetchUnassignedTrips(): Promise<Trip[]> {
+  const { data } = await apiClient.get<Trip[]>("/trips", {
+    params: { unassigned: true },
   });
   return data;
 }
@@ -38,5 +47,10 @@ export async function updateTripStatus(tripId: string, status: string): Promise<
 
 export async function fetchVehicleIntelligence(tripId: string): Promise<VehicleIntelligence> {
   const { data } = await apiClient.get<VehicleIntelligence>(`/trips/${tripId}/vehicle-intelligence`);
+  return data;
+}
+
+export async function fetchDriverIntelligence(tripId: string): Promise<DriverIntelligence> {
+  const { data } = await apiClient.get<DriverIntelligence>(`/trips/${tripId}/driver-intelligence`);
   return data;
 }

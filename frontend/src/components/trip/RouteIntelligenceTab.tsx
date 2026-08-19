@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { Trip } from "@/types/trip";
+import type { Route } from "@/types/route";
 import { useRoutes } from "@/hooks/useRoutes";
 import { useTripBreadcrumbs } from "@/hooks/useTripBreadcrumbs";
 import { useRoadRoute } from "@/hooks/useRoadRoute";
@@ -11,13 +12,14 @@ import { WeatherTrafficRow } from "./WeatherTrafficRow";
 
 interface RouteIntelligenceTabProps {
   trip: Trip;
+  route?: Route;
 }
 
-export function RouteIntelligenceTab({ trip }: RouteIntelligenceTabProps) {
-  const { data: routes, isLoading: routesLoading } = useRoutes(trip.trip_id);
+export function RouteIntelligenceTab({ trip, route: passedRoute }: RouteIntelligenceTabProps) {
+  const { data: routes, isLoading: routesLoading } = useRoutes(passedRoute ? undefined : trip.trip_id);
   const { data: breadcrumbs } = useTripBreadcrumbs(trip.trip_id);
 
-  const route = routes?.[0] ?? null;
+  const route = passedRoute ?? routes?.[0] ?? null;
   const sortedStops = useMemo(
     () => (route ? [...route.stops].sort((a, b) => a.sequence - b.sequence) : []),
     [route],
