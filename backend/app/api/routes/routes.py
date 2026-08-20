@@ -43,7 +43,7 @@ async def list_routes(skip: int = 0, limit: int = 100, trip_id: str | None = Non
 
 @router.post("/optimize", response_model=OptimizeRouteResponse)
 async def optimize(request: OptimizeRouteRequest):
-    return await optimize_route(request.stops)
+    return await optimize_route(request.stops, request.vehicle_capacity_kg)
 
 
 @router.post("/assign", response_model=RouteRead, status_code=201)

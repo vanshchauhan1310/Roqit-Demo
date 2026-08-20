@@ -18,6 +18,7 @@ export function RouteDetailPage() {
   }, [route]);
 
   const { data: trip } = useTripDetail(firstTripId);
+  const hasLinkedTrips = Boolean(route && firstTripId);
 
   return (
     <div>
@@ -43,11 +44,17 @@ export function RouteDetailPage() {
             <span>Vehicle {route.vehicle_id ?? "—"}</span>
           </div>
 
-          {trip ? (
+          {!hasLinkedTrips && (
+            <p className="text-sm text-gray-500">
+              This route has no trips linked to its stops, so trip-scoped intelligence (route, vehicle, driver,
+              real-time, reporting) isn't available for it.
+            </p>
+          )}
+          {hasLinkedTrips && (trip ? (
             <RouteDetailTabs route={route} trip={trip} />
           ) : (
             <p className="text-sm text-gray-500">Loading route intelligence…</p>
-          )}
+          ))}
         </div>
       )}
     </div>
