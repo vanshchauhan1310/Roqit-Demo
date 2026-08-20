@@ -4,6 +4,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from src.models import delay_risk, eta_prediction, expected_delay, fuel_consumption, trip_cost
+from src.optimizer import opt
+from src.optimizer.hybrid_solver import hybrid_solve
 
 app = FastAPI(title="Fleet Optimization ML Service")
 
@@ -86,6 +88,29 @@ class TripCostPredictionResponse(BaseModel):
     predicted_trip_cost: float
 
 
+class OptimizeJob(BaseModel):
+    trip_id: str
+    pickup_stop_index: int
+    delivery_stop_index: int
+    load_weight_kg: float = 0.0
+
+
+class PickupDeliveryOptimizeRequest(BaseModel):
+    jobs: list[OptimizeJob]
+    duration_matrix: list[list[float]]
+    distance_matrix: list[list[float]]
+    coordinates: list[list[float]]  # [[lat, lon], ...], same index space as the matrices
+    vehicle_capacity_kg: float | None = None
+
+
+class PickupDeliveryOptimizeResponse(BaseModel):
+    order: list[int]  # matrix indices in optimized visiting order
+    total_duration_seconds: float
+    total_distance_meters: float
+    solver_used: Literal["exact", "hybrid"]
+    feasible: bool
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -141,3 +166,38 @@ def predict_trip_cost(request: CostPredictionRequest):
     except FileNotFoundError:
         raise HTTPException(status_code=503, detail="Trip-cost model not found in models_store/.")
     return TripCostPredictionResponse(**result)
+
+
+# No FileNotFoundError -> 503 handling here (unlike /predict/*): hybrid_solve
+# degrades gracefully to the exact opt.solve() path when the .joblib ranking
+# models haven't been trained yet (run src/optimizer/train_ml.py), rather than
+# ever failing the request just because they're missing.
+@app.post("/optimize/pickup-delivery", response_model=PickupDeliveryOptimizeResponse)
+def optimize_pickup_delivery(request: PickupDeliveryOptimizeRequest):
+    jobs = [
+        opt.Job(
+            trip_id=j.trip_id,
+            pickup_idx=j.pickup_stop_index,
+            delivery_idx=j.delivery_stop_index,
+            load_weight_kg=j.load_weight_kg or 0.0,
+        )
+        for j in request.jobs
+    ]
+    try:
+        result = hybrid_solve(
+            jobs=jobs,
+            duration_matrix=request.duration_matrix,
+            distance_matrix=request.distance_matrix,
+            coordinates=[tuple(c) for c in request.coordinates],
+            vehicle_capacity_kg=request.vehicle_capacity_kg,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return PickupDeliveryOptimizeResponse(
+        order=result.route,
+        total_duration_seconds=result.total_duration_seconds,
+        total_distance_meters=result.total_distance_meters,
+        solver_used=result.solver_used,
+        feasible=result.feasible,
+    )

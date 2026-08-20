@@ -1,14 +1,9 @@
-import math
-
 import httpx
 from fastapi import HTTPException
 
 from app.core.config import settings
 from app.schemas.optimize import OptimizeRouteResponse, OptimizeStopInput
-
-# Above this many stops, exact Held-Karp (O(n^2 * 2^n)) gets too slow/memory-hungry —
-# fall back to a nearest-neighbor + 2-opt heuristic instead.
-EXACT_SOLVER_MAX_STOPS = 12
+from app.services import ml_client
 
 
 async def _fetch_matrices(stops: list[OptimizeStopInput]) -> tuple[list[list[float]], list[list[float]]]:
@@ -30,98 +25,64 @@ async def _fetch_matrices(stops: list[OptimizeStopInput]) -> tuple[list[list[flo
     return durations, distances
 
 
-def _held_karp_open_path(cost: list[list[float]]) -> list[int]:
-    """Exact shortest Hamiltonian path starting at node 0 (no return to start)."""
-    n = len(cost)
-    if n <= 2:
-        return list(range(n))
+def _build_jobs(stops: list[OptimizeStopInput]) -> list[dict]:
+    """Groups stops by trip_id into pickup-delivery job pairs the ML
+    service's hybrid solver operates on. Every trip present must have both
+    a pickup and a delivery stop in the request."""
+    by_trip: dict[str, dict[str, int]] = {}
+    for i, stop in enumerate(stops):
+        by_trip.setdefault(stop.trip_id, {})[stop.stop_type] = i
 
-    size = 1 << n
-    dp = [[math.inf] * n for _ in range(size)]
-    parent = [[-1] * n for _ in range(size)]
-    dp[1][0] = 0.0  # mask={0}, currently at node 0, cost 0
-
-    for mask in range(size):
-        if not (mask & 1):  # every valid state includes the fixed start node
-            continue
-        for j in range(n):
-            if not (mask & (1 << j)) or dp[mask][j] == math.inf:
-                continue
-            base_cost = dp[mask][j]
-            for k in range(n):
-                if mask & (1 << k):
-                    continue
-                new_mask = mask | (1 << k)
-                new_cost = base_cost + cost[j][k]
-                if new_cost < dp[new_mask][k]:
-                    dp[new_mask][k] = new_cost
-                    parent[new_mask][k] = j
-
-    full_mask = size - 1
-    best_end = min(range(n), key=lambda j: dp[full_mask][j])
-
-    order: list[int] = []
-    mask, node = full_mask, best_end
-    while node != -1:
-        order.append(node)
-        prev = parent[mask][node]
-        mask ^= 1 << node
-        node = prev
-    order.reverse()
-    return order
+    jobs = []
+    for trip_id, indices in by_trip.items():
+        if "pickup" not in indices or "delivery" not in indices:
+            raise HTTPException(status_code=400, detail=f"Trip {trip_id} is missing its pickup or delivery stop")
+        pickup_stop = stops[indices["pickup"]]
+        jobs.append(
+            {
+                "trip_id": trip_id,
+                "pickup_stop_index": indices["pickup"],
+                "delivery_stop_index": indices["delivery"],
+                "load_weight_kg": pickup_stop.load_weight_kg or 0.0,
+            }
+        )
+    return jobs
 
 
-def _nearest_neighbor(cost: list[list[float]]) -> list[int]:
-    n = len(cost)
-    visited = [False] * n
-    visited[0] = True
-    order = [0]
-    for _ in range(n - 1):
-        last = order[-1]
-        nxt = min((j for j in range(n) if not visited[j]), key=lambda j: cost[last][j])
-        visited[nxt] = True
-        order.append(nxt)
-    return order
-
-
-def _two_opt(order: list[int], cost: list[list[float]]) -> list[int]:
-    """Local-search cleanup for the heuristic path; node 0 (index 0 in `order`) stays fixed."""
-    n = len(order)
-    improved = True
-    while improved:
-        improved = False
-        for i in range(1, n - 1):
-            for j in range(i + 1, n):
-                a, b = order[i - 1], order[i]
-                c = order[j]
-                d = order[j + 1] if j + 1 < n else None
-                before = cost[a][b] + (cost[c][d] if d is not None else 0)
-                after = cost[a][c] + (cost[b][d] if d is not None else 0)
-                if after < before - 1e-9:
-                    order[i : j + 1] = list(reversed(order[i : j + 1]))
-                    improved = True
-    return order
-
-
-def _solve_order(cost: list[list[float]]) -> list[int]:
-    n = len(cost)
-    if n <= EXACT_SOLVER_MAX_STOPS:
-        return _held_karp_open_path(cost)
-    return _two_opt(_nearest_neighbor(cost), cost)
-
-
-async def optimize_route(stops: list[OptimizeStopInput]) -> OptimizeRouteResponse:
+async def optimize_route(stops: list[OptimizeStopInput], vehicle_capacity_kg: float | None = None) -> OptimizeRouteResponse:
+    """Fetches a real OSRM duration/distance matrix, groups stops into
+    pickup-delivery jobs, and delegates the actual combinatorial search to
+    the ML service's hybrid pickup-delivery optimizer (see
+    ml/src/optimizer/) - this module only owns the real-world I/O (OSRM),
+    matching the rest of this app's backend-never-does-ML-itself convention."""
     if len(stops) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 stops to optimize")
 
     durations, distances = await _fetch_matrices(stops)
-    order = _solve_order(durations)
+    jobs = _build_jobs(stops)
+    coordinates = [[s.latitude, s.longitude] for s in stops]
 
-    total_duration = sum(durations[order[i]][order[i + 1]] for i in range(len(order) - 1))
-    total_distance = sum(distances[order[i]][order[i + 1]] for i in range(len(order) - 1))
+    try:
+        result = await ml_client.optimize_pickup_delivery_route(
+            {
+                "jobs": jobs,
+                "duration_matrix": durations,
+                "distance_matrix": distances,
+                "coordinates": coordinates,
+                "vehicle_capacity_kg": vehicle_capacity_kg,
+            }
+        )
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Optimization service error: {exc.response.status_code} {exc.response.text}"
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Optimization service unavailable: {exc}")
 
+    order_indices: list[int] = result["order"]
     return OptimizeRouteResponse(
-        order=[stops[i].key for i in order],
-        total_duration_seconds=total_duration,
-        total_distance_meters=total_distance,
+        order=[stops[i].key for i in order_indices],
+        total_duration_seconds=result["total_duration_seconds"],
+        total_distance_meters=result["total_distance_meters"],
+        solver_used=result["solver_used"],
     )

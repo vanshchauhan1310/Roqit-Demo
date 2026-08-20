@@ -23,8 +23,14 @@ export async function addRouteStop(routeId: string, payload: AddRouteStopPayload
   return data;
 }
 
-export async function optimizeRouteOrder(stops: OptimizeStopInput[]): Promise<OptimizeRouteResult> {
-  const { data } = await apiClient.post<OptimizeRouteResult>("/routes/optimize", { stops });
+export async function optimizeRouteOrder(
+  stops: OptimizeStopInput[],
+  vehicleCapacityKg: number | null,
+): Promise<OptimizeRouteResult> {
+  const { data } = await apiClient.post<OptimizeRouteResult>("/routes/optimize", {
+    stops,
+    vehicle_capacity_kg: vehicleCapacityKg,
+  });
   return data;
 }
 
