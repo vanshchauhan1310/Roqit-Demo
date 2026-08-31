@@ -8,10 +8,12 @@ class VehicleBase(BaseModel):
     year: int | None = None
     fuel_type: str | None = None
     load_capacity_kg: int | None = None
+    avg_kmpl_rated: float | None = None
 
 
 class VehicleCreate(VehicleBase):
     vehicle_id: str
+    status: str | None = "active"
 
 
 class VehicleRead(VehicleBase):

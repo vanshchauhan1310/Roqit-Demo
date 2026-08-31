@@ -56,6 +56,12 @@ class Trip(Base):
     harsh_braking_count: Mapped[int | None] = mapped_column(BigInteger)
     harsh_accel_count: Mapped[int | None] = mapped_column(BigInteger)
 
+    # Denormalized reference to the route this trip is assigned to (if any).
+    # Set by the greedy insertion / new-route flow and cleared by LNS destroy.
+    # Kept as a String (no FK) to avoid a UUID/string type mismatch while still
+    # enabling the fast "is this trip already assigned?" checks.
+    route_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
     vehicle: Mapped["Vehicle"] = relationship(back_populates="trips")
     driver: Mapped["Driver"] = relationship(back_populates="trips")
     routes: Mapped[list["Route"]] = relationship()

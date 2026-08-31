@@ -28,6 +28,7 @@ export interface Trip {
   stop_count: number;
   load_weight_kg: number | null;
   load_value: number | null;
+  route_id: string | null;
 }
 
 export interface TripFilterOptions {

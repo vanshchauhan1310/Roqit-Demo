@@ -1,3 +1,128 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@keyframes liveops-pulse {
+  0% { transform: scale(0.6); opacity: 0.55; }
+  70% { transform: scale(2.2); opacity: 0; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+/* ===== Live Ops mission-control styling ===== */
+
+/* Dark "control room" map tiles (CSS inversion trick over OSM raster) */
+.dark-map .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(185deg) brightness(0.92) contrast(0.92) saturate(0.7);
+}
+.dark-map .leaflet-container { background: #0b1220; }
+.dark-map .leaflet-control-attribution {
+  background: rgba(15, 23, 42, 0.8);
+  color: #64748b;
+}
+.dark-map .leaflet-control-attribution a { color: #94a3b8; }
+.dark-map .leaflet-control-zoom a {
+  background: #1e293b;
+  color: #e2e8f0;
+  border-color: #334155;
+}
+.dark-map .leaflet-tooltip {
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+.dark-map .leaflet-tooltip-top:before { border-top-color: #334155; }
+
+/* Animated assignment flight-line drawn on the map */
+.flight-line {
+  stroke-dasharray: 8 8;
+  animation: flight-draw 1.2s ease-out forwards, flight-fade 4s ease-in forwards;
+}
+@keyframes flight-draw {
+  from { stroke-dashoffset: 400; opacity: 0.95; }
+  to   { stroke-dashoffset: 0;   opacity: 0.95; }
+}
+@keyframes flight-fade {
+  0%, 60% { opacity: 0.95; }
+  100%    { opacity: 0; }
+}
+
+/* Event feed rows slide in when they appear */
+.feed-row-enter {
+  animation: feed-slide 0.35s ease-out;
+}
+@keyframes feed-slide {
+  from { transform: translateX(-14px); opacity: 0; }
+  to   { transform: translateX(0);     opacity: 1; }
+}
+
+/* New plan chips pop in */
+.chip-pop {
+  animation: chip-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes chip-pop {
+  from { transform: scale(0.4); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+
+/* KPI value flash when it changes */
+.kpi-flash { animation: kpi-flash 0.7s ease-out; }
+@keyframes kpi-flash {
+  0%   { color: #5eead4; text-shadow: 0 0 14px rgba(94, 234, 212, 0.9); }
+  100% { text-shadow: none; }
+}
+
+/* Slim dark scrollbars for the rails */
+.ops-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.ops-scroll::-webkit-scrollbar-track { background: transparent; }
+.ops-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+.ops-scroll::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+/* Monospace tabular digits for counters */
+.tnum { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* ===== LNS impact replay: after-routes redraw themselves, staggered ===== */
+.lns-draw {
+  stroke-dasharray: 1400;
+  stroke-dashoffset: 1400;
+  animation: lns-draw 1.3s ease-out forwards;
+}
+@keyframes lns-draw { to { stroke-dashoffset: 0; } }
+.lns-d-0  { animation-delay: 0s; }
+.lns-d-1  { animation-delay: .25s; }
+.lns-d-2  { animation-delay: .5s; }
+.lns-d-3  { animation-delay: .75s; }
+.lns-d-4  { animation-delay: 1s; }
+.lns-d-5  { animation-delay: 1.25s; }
+.lns-d-6  { animation-delay: 1.5s; }
+.lns-d-7  { animation-delay: 1.75s; }
+.lns-d-8  { animation-delay: 2s; }
+.lns-d-9  { animation-delay: 2.25s; }
+.lns-d-10 { animation-delay: 2.5s; }
+.lns-d-11 { animation-delay: 2.75s; }
+.lns-d-12 { animation-delay: 3s; }
+.lns-d-13 { animation-delay: 3.25s; }
+.lns-d-14 { animation-delay: 3.5s; }
+.lns-d-15 { animation-delay: 3.75s; }
+
+/* Moved-trip flight lines appear after the routes have redrawn */
+.lns-flight {
+  stroke-dasharray: 5 9;
+  animation: lns-flight-in .5s ease-out forwards;
+}
+@keyframes lns-flight-in { from { opacity: 0; } to { opacity: .9; } }
+.lns-f-0  { animation-delay: 2.2s; }
+.lns-f-1  { animation-delay: 2.6s; }
+.lns-f-2  { animation-delay: 3s; }
+.lns-f-3  { animation-delay: 3.4s; }
+.lns-f-4  { animation-delay: 3.8s; }
+.lns-f-5  { animation-delay: 4.2s; }
+.lns-f-6  { animation-delay: 4.6s; }
+.lns-f-7  { animation-delay: 5s; }
+.lns-f-8  { animation-delay: 5.4s; }
+.lns-f-9  { animation-delay: 5.8s; }
+.lns-f-10 { animation-delay: 6.2s; }
+.lns-f-11 { animation-delay: 6.6s; }
+
+/* Run chips strip in the impact panel */
+.lns-chip-enter { animation: chip-pop .35s cubic-bezier(.34,1.56,.64,1); }

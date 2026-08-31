@@ -1,10 +1,24 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import trips, routes, vehicles, drivers, realtime, reports, geocode, roster, predictions
 from app.core.config import settings
+from app.workers.supervisor import supervisor
 
-app = FastAPI(title="Fleet Optimization Platform API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start the background optimization workers (trip assignment + LNS)."""
+    supervisor.start()
+    try:
+        yield
+    finally:
+        supervisor.stop()
+
+
+app = FastAPI(title="Fleet Optimization Platform API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

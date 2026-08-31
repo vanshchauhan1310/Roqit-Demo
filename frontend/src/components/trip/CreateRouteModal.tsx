@@ -7,10 +7,10 @@ import { useTrips } from "@/hooks/useTrips";
 import { useDriverRoster } from "@/hooks/useDriverRoster";
 import { useVehicleRoster } from "@/hooks/useVehicleRoster";
 import { useRoadRoute } from "@/hooks/useRoadRoute";
-import { RouteMapPreview } from "./RouteMapPreview";
+import { RouteMapPreview, type StopType } from "./RouteMapPreview";
 import type { Trip } from "@/types/trip";
 import type { DriverRosterItem, VehicleRosterItem } from "@/types/roster";
-import type { OptimizeStopInput } from "@/types/optimize";
+import type { OptimizeStopInput, OptimizeVehicleInput } from "@/types/optimize";
 import {
   IconAlertTriangle,
   IconArrowDown,
@@ -75,6 +75,7 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
   const [loads, setLoads] = useState<Record<string, TripLoad>>({});
   const [pickupDateTime, setPickupDateTime] = useState("");
   const [routeName, setRouteName] = useState("");
+  const [depot, setDepot] = useState<{ lat: number; lng: number; address: string } | null>(null);
 
   const queryClient = useQueryClient();
   // Shows every trip (not just unassigned ones - a trip already on a route is
@@ -101,8 +102,33 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
   const reordered = !sameOrder(stops, defaultStops);
 
   const mapStops = useMemo(
-    () =>
-      stops
+    () => {
+      // Use explicit depot if provided, otherwise fall back to first stop's pickup location
+      let depotLat = 0;
+      let depotLng = 0;
+      let depotAddress = "Depot (Start/End)";
+      
+      if (depot) {
+        depotLat = depot.lat;
+        depotLng = depot.lng;
+        depotAddress = depot.address || "Depot (Start/End)";
+      } else {
+        const firstStop = stops[0];
+        const firstTrip = firstStop ? tripsById.get(firstStop.tripId) : null;
+        depotLat = firstTrip?.gps_start_lat ?? 0;
+        depotLng = firstTrip?.gps_start_lon ?? 0;
+      }
+      
+      const depotStop = {
+        key: "depot",
+        lat: depotLat,
+        lng: depotLng,
+        label: depotAddress,
+        sequence: 0,
+        type: "depot" as StopType,
+      };
+      
+      const regularStops = stops
         .map((stop, i) => {
           const trip = tripsById.get(stop.tripId);
           const lat = stop.stopType === "pickup" ? trip?.gps_start_lat : trip?.gps_end_lat;
@@ -114,10 +140,15 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
             lng,
             label: `${stop.stopType === "pickup" ? "Pickup" : "Delivery"} · ${trip?.trip_id ?? ""}`,
             sequence: i + 1,
+            type: stop.stopType as StopType,
           };
         })
-        .filter((s): s is NonNullable<typeof s> => s !== null),
-    [stops, tripsById],
+        .filter((s): s is NonNullable<typeof s> => s !== null);
+
+      // Depot at start and end (for visualization)
+      return [depotStop, ...regularStops];
+    },
+    [stops, tripsById, depot],
   );
 
   const roadRoute = useRoadRoute(mapStops.map((s) => [s.lat, s.lng] as [number, number]));
@@ -143,14 +174,68 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
           trip_id: stop.tripId,
           stop_type: stop.stopType,
           load_weight_kg: enteredWeight ? Number(enteredWeight) : (trip?.load_weight_kg ?? null),
+          pickup_earliest: null,
+          pickup_latest: null,
+          delivery_earliest: null,
+          delivery_latest: null,
+          service_time_sec: 300,
         };
       });
-      return optimizeRouteOrder(stopInputs, selectedVehicle?.load_capacity_kg ?? null);
+
+      // Build vehicles array from selected vehicle or all available vehicles
+      const vehicleInputs: OptimizeVehicleInput[] = [];
+      if (selectedVehicle) {
+        vehicleInputs.push({
+          vehicle_id: selectedVehicle.vehicle_id,
+          capacity_kg: selectedVehicle.load_capacity_kg ?? 10000,
+          start_location: 0, // depot at first stop
+          avg_kmpl_rated: selectedVehicle.avg_kmpl_rated ?? 8.5,
+          fuel_price_per_l: 92.5, // default fuel price
+        });
+      } else if (vehicles?.length) {
+        // If no vehicle selected yet, use all available vehicles
+        vehicles.forEach((v) => {
+          vehicleInputs.push({
+            vehicle_id: v.vehicle_id,
+            capacity_kg: v.load_capacity_kg ?? 10000,
+            start_location: 0,
+            avg_kmpl_rated: v.avg_kmpl_rated ?? 8.5,
+            fuel_price_per_l: 92.5,
+          });
+        });
+      }
+
+      const startTime = pickupDateTime ? Math.floor(new Date(pickupDateTime).getTime() / 1000) : Math.floor(Date.now() / 1000);
+
+      return optimizeRouteOrder(
+        stopInputs, 
+        vehicleInputs.length > 0 ? vehicleInputs : null, 
+        selectedVehicle?.load_capacity_kg ?? null, 
+        undefined, 
+        startTime,
+        10,
+        depot ? { key: "depot", latitude: depot.lat, longitude: depot.lng, address: depot.address } : undefined
+      );
     },
     onSuccess: (result) => {
-      const byKey = new Map(stops.map((s) => [`${s.tripId}:${s.stopType}`, s]));
-      const nextStops = result.order.map((key) => byKey.get(key)).filter((s): s is StopPreview => Boolean(s));
-      if (nextStops.length === stops.length) setStops(nextStops);
+      // Handle both new multi-vehicle response (routes) and legacy single-vehicle (order)
+      if (result.routes && result.routes.length > 0) {
+        // Multi-vehicle: flatten all routes into a single sequence for UI display
+        const byKey = new Map(stops.map((s) => [`${s.tripId}:${s.stopType}`, s]));
+        const nextStops: StopPreview[] = [];
+        for (const route of result.routes) {
+          for (const key of route.stops) {
+            const stop = byKey.get(key);
+            if (stop) nextStops.push(stop);
+          }
+        }
+        if (nextStops.length === stops.length) setStops(nextStops);
+      } else if (result.order) {
+        // Legacy single-vehicle format
+        const byKey = new Map(stops.map((s) => [`${s.tripId}:${s.stopType}`, s]));
+        const nextStops = result.order.map((key) => byKey.get(key)).filter((s): s is StopPreview => Boolean(s));
+        if (nextStops.length === stops.length) setStops(nextStops);
+      }
     },
   });
 
@@ -305,6 +390,8 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
                 isLoading={vehiclesLoading}
                 selectedVehicleId={vehicleId}
                 onSelectVehicle={setVehicleId}
+                depot={depot}
+                onSelectDepot={setDepot}
               />
             )}
             {step === 3 && (
@@ -442,7 +529,7 @@ interface TripsStepProps {
   onOptimize: () => void;
   isOptimizing: boolean;
   optimizeDisabled: boolean;
-  solverUsed: "exact" | "hybrid" | null;
+  solverUsed: "or_tools" | "fallback" | "exact" | "hybrid" | null;
   optimizeErrorMessage: string | null;
 }
 
@@ -533,7 +620,7 @@ function TripsStep({
           </div>
           {solverUsed && (
             <p className="text-xs text-gray-400 mb-2">
-              Optimized via the {solverUsed === "hybrid" ? "hybrid ML+DSA" : "exact"} solver — uses whatever
+              Optimized via the {solverUsed === "hybrid" ? "hybrid ML+DSA" : solverUsed === "or_tools" ? "OR-Tools multi-vehicle" : solverUsed === "fallback" ? "fallback (Greedy+LNS)" : "exact"} solver — uses whatever
               load/vehicle data is known so far; re-run after selecting a vehicle for weight-aware ordering.
             </p>
           )}
@@ -668,9 +755,37 @@ interface VehicleStepProps {
   isLoading: boolean;
   selectedVehicleId: string;
   onSelectVehicle: (id: string) => void;
+  depot: { lat: number; lng: number; address: string } | null;
+  onSelectDepot: (depot: { lat: number; lng: number; address: string } | null) => void;
 }
 
-function VehicleStep({ vehicles, isLoading, selectedVehicleId, onSelectVehicle }: VehicleStepProps) {
+// Predefined city depots
+const CITY_DEPOTS = [
+  { key: "bangalore", label: "Bangalore Depot", lat: 12.9716, lng: 77.5946, address: "Bangalore Depot, Karnataka" },
+  { key: "chennai", label: "Chennai Depot", lat: 13.0827, lng: 80.2707, address: "Chennai Depot, Tamil Nadu" },
+  { key: "hosur", label: "Hosur Depot", lat: 12.7409, lng: 77.8253, address: "Hosur Depot, Tamil Nadu" },
+  { key: "coimbatore", label: "Coimbatore Depot", lat: 11.0168, lng: 76.9558, address: "Coimbatore Depot, Tamil Nadu" },
+  { key: "custom", label: "Custom Location", lat: 0, lng: 0, address: "" },
+];
+
+function VehicleStep({ vehicles, isLoading, selectedVehicleId, onSelectVehicle, depot, onSelectDepot }: VehicleStepProps) {
+  const [customDepot, setCustomDepot] = useState<{ lat: number; lng: number; address: string }>({ lat: 0, lng: 0, address: "Custom Depot" });
+  const [showCustom, setShowCustom] = useState(false);
+
+  const handleDepotSelect = (d: typeof CITY_DEPOTS[0] | null) => {
+    if (!d) {
+      onSelectDepot(null);
+      setShowCustom(false);
+      return;
+    }
+    if (d.key === "custom") {
+      setShowCustom(true);
+      return;
+    }
+    onSelectDepot({ lat: d.lat, lng: d.lng, address: d.address });
+    setShowCustom(false);
+  };
+
   return (
     <div>
       <label className="block text-sm font-semibold text-gray-900 mb-2">Assign vehicle</label>
@@ -727,6 +842,92 @@ function VehicleStep({ vehicles, isLoading, selectedVehicleId, onSelectVehicle }
             </button>
           );
         })}
+      </div>
+
+      {/* Depot Selection */}
+      <div className="mt-6">
+        <label className="block text-sm font-semibold text-gray-900 mb-2">Select depot (start/end point)</label>
+        <p className="text-xs text-gray-500 mb-2">Vehicle starts and ends at this depot. Pickups/deliveries are separate.</p>
+        <div className="space-y-2">
+          {CITY_DEPOTS.map((d) => (
+            <button
+              key={d.key}
+              type="button"
+              onClick={() => handleDepotSelect(d)}
+              className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-lg border text-left transition-colors ${
+                depot?.address === d.address
+                  ? "border-green-500 bg-green-50"
+                  : customDepot && d.key === "custom"
+                    ? "border-teal-500 bg-teal-50"
+                    : "border-gray-200 hover:bg-gray-50"
+              }`}
+            >
+              <div>
+                <div className="text-sm font-medium text-gray-900">{d.label}</div>
+                <div className="text-xs text-gray-500 mt-0.5">{d.address || "Click to enter custom coordinates"}</div>
+              </div>
+              {depot?.address === d.address && <IconCheck className="text-green-600" />}
+            </button>
+          ))}
+        </div>
+
+        {showCustom && (
+          <div className="mt-3 space-y-2 p-3 border border-gray-200 rounded-lg bg-gray-50">
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="number"
+                step="any"
+                placeholder="Latitude"
+                value={customDepot.lat ?? ""}
+                onChange={(e) => setCustomDepot((prev) => ({ ...prev, lat: Number(e.target.value) }))}
+                className="px-3 py-2 text-sm border border-gray-300 rounded-lg"
+              />
+              <input
+                type="number"
+                step="any"
+                placeholder="Longitude"
+                value={customDepot.lng ?? ""}
+                onChange={(e) => setCustomDepot((prev) => ({ ...prev, lng: Number(e.target.value) }))}
+                className="px-3 py-2 text-sm border border-gray-300 rounded-lg"
+              />
+            </div>
+            <input
+              type="text"
+              placeholder="Address (optional)"
+              value={customDepot.address ?? "Custom Depot"}
+              onChange={(e) => setCustomDepot((prev) => ({ ...prev, address: e.target.value }))}
+              className="px-3 py-2 text-sm border border-gray-300 rounded-lg"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (customDepot?.lat && customDepot?.lng) {
+                    onSelectDepot(customDepot);
+                    setShowCustom(false);
+                  }
+                }}
+                className="px-4 py-2 text-sm font-medium bg-teal-600 text-white rounded-lg hover:bg-teal-700"
+              >
+                Use this depot
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowCustom(false)}
+                className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {depot && (
+          <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+            <p className="text-sm font-medium text-green-800">Selected depot: {depot.address}</p>
+            <p className="text-xs text-green-600">Lat: {depot.lat.toFixed(6)}, Lng: {depot.lng.toFixed(6)}</p>
+          </div>
+        )}
       </div>
     </div>
   );

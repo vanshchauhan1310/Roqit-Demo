@@ -1,6 +1,13 @@
 __pycache__
-.venv
+**/__pycache__
 *.pyc
-models_store
+.venv
+venv
+.env
+.git
+.pytest_cache
+# Raw/processed training data stays out of the image — the trained artifacts
+# in models_store/ are what the service loads at runtime, so they ship.
 data/raw
 data/processed
+*.log

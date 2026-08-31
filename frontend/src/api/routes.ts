@@ -1,6 +1,7 @@
 import { apiClient } from "./client";
 import type { AddRouteStopPayload, CreateRoutePayload, Route, RouteStop } from "@/types/route";
-import type { OptimizeRouteResult, OptimizeStopInput } from "@/types/optimize";
+import type { OptimizeStopInput, OptimizeVehicleInput, CostWeightsInput, OptimizeRouteResponse } from "@/types/optimize";
+import type { LnsRun } from "@/types/lns";
 import type { RouteAssignPayload, RouteReorderPayload } from "@/types/route";
 
 export async function fetchRoutes(tripId?: string): Promise<Route[]> {
@@ -25,11 +26,23 @@ export async function addRouteStop(routeId: string, payload: AddRouteStopPayload
 
 export async function optimizeRouteOrder(
   stops: OptimizeStopInput[],
+  vehicles: OptimizeVehicleInput[] | null,
   vehicleCapacityKg: number | null,
-): Promise<OptimizeRouteResult> {
-  const { data } = await apiClient.post<OptimizeRouteResult>("/routes/optimize", {
+  costWeights?: CostWeightsInput,
+  startTime?: number,
+  solverTimeLimitSeconds: number = 10,
+  depot?: { key: string; latitude: number; longitude: number; address?: string },
+): Promise<OptimizeRouteResponse> {
+  const { data } = await apiClient.post<OptimizeRouteResponse>("/routes/optimize", {
     stops,
+    vehicles,
     vehicle_capacity_kg: vehicleCapacityKg,
+    auto_generate_windows: true,
+    start_time: startTime ?? Math.floor(Date.now() / 1000),
+    vehicle_speed_kph: 40,
+    cost_weights: costWeights,
+    solver_time_limit_seconds: solverTimeLimitSeconds,
+    depot,
   });
   return data;
 }
@@ -46,5 +59,20 @@ export async function reorderRouteStops(routeId: string, payload: RouteReorderPa
 
 export async function assignRouteToTrip(routeId: string, tripId: string): Promise<Route> {
   const { data } = await apiClient.patch<Route>(`/routes/${routeId}/trip`, { trip_id: tripId });
+  return data;
+}
+
+export async function triggerLns(): Promise<{ message: string; job_id: string }> {
+  const { data } = await apiClient.post<{ message: string; job_id: string }>("/routes/lns/trigger");
+  return data;
+}
+
+export async function fetchLnsHistory(limit: number = 20): Promise<LnsRun[]> {
+  const { data } = await apiClient.get<LnsRun[]>("/routes/lns/history", { params: { limit } });
+  return data;
+}
+
+export async function fetchLnsRun(runId: string): Promise<LnsRun> {
+  const { data } = await apiClient.get<LnsRun>(`/routes/lns/history/${runId}`);
   return data;
 }

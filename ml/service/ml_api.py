@@ -6,6 +6,13 @@ from pydantic import BaseModel
 from src.models import delay_risk, eta_prediction, expected_delay, fuel_consumption, trip_cost
 from src.optimizer import opt
 from src.optimizer.hybrid_solver import hybrid_solve
+from src.optimizer.ml_windows import build_time_windows_for_jobs, optimize_with_ml_windows
+from src.optimizer.or_tools_solver import (
+    Vehicle,
+    CostWeights,
+    solve_with_fallback,
+    OrToolsSolveResult,
+)
 
 app = FastAPI(title="Fleet Optimization ML Service")
 
@@ -93,21 +100,57 @@ class OptimizeJob(BaseModel):
     pickup_stop_index: int
     delivery_stop_index: int
     load_weight_kg: float = 0.0
+    pickup_earliest: int | None = None
+    pickup_latest: int | None = None
+    delivery_earliest: int | None = None
+    delivery_latest: int | None = None
+    service_time_sec: int = 300
+
+
+class OptimizeVehicle(BaseModel):
+    vehicle_id: str
+    capacity_kg: float
+    start_location: int
+    avg_kmpl_rated: float = 8.5
+    fuel_price_per_l: float = 92.5
+    duty_start: int | None = None
+    duty_end: int | None = None
+
+
+class CostWeightsRequest(BaseModel):
+    alpha: float = 0.4   # duration weight
+    delta: float = 0.2   # distance weight
+    beta: float = 0.3    # fuel weight
+    gamma: float = 0.1   # load (ton-km) weight
+    lateness_weight: float = 60.0  # lateness penalty per second
 
 
 class PickupDeliveryOptimizeRequest(BaseModel):
     jobs: list[OptimizeJob]
+    vehicles: list[OptimizeVehicle]
     duration_matrix: list[list[float]]
     distance_matrix: list[list[float]]
-    coordinates: list[list[float]]  # [[lat, lon], ...], same index space as the matrices
-    vehicle_capacity_kg: float | None = None
+    coordinates: list[list[float]]
+    start_time: int = 0
+    auto_generate_windows: bool = True
+    vehicle_speed_kph: float = 40.0
+    cost_weights: CostWeightsRequest | None = None
+    solver_time_limit_seconds: int = 10
+
+
+class VehicleRoute(BaseModel):
+    vehicle_id: str
+    stops: list[int]
 
 
 class PickupDeliveryOptimizeResponse(BaseModel):
-    order: list[int]  # matrix indices in optimized visiting order
+    routes: list[VehicleRoute]
     total_duration_seconds: float
     total_distance_meters: float
-    solver_used: Literal["exact", "hybrid"]
+    total_lateness_seconds: float
+    total_fuel_cost_rupees: float
+    total_load_ton_km: float
+    solver_used: Literal["or_tools", "fallback"]
     feasible: bool
 
 
@@ -168,10 +211,6 @@ def predict_trip_cost(request: CostPredictionRequest):
     return TripCostPredictionResponse(**result)
 
 
-# No FileNotFoundError -> 503 handling here (unlike /predict/*): hybrid_solve
-# degrades gracefully to the exact opt.solve() path when the .joblib ranking
-# models haven't been trained yet (run src/optimizer/train_ml.py), rather than
-# ever failing the request just because they're missing.
 @app.post("/optimize/pickup-delivery", response_model=PickupDeliveryOptimizeResponse)
 def optimize_pickup_delivery(request: PickupDeliveryOptimizeRequest):
     jobs = [
@@ -180,24 +219,83 @@ def optimize_pickup_delivery(request: PickupDeliveryOptimizeRequest):
             pickup_idx=j.pickup_stop_index,
             delivery_idx=j.delivery_stop_index,
             load_weight_kg=j.load_weight_kg or 0.0,
+            pickup_earliest=j.pickup_earliest,
+            pickup_latest=j.pickup_latest,
+            delivery_earliest=j.delivery_earliest,
+            delivery_latest=j.delivery_latest,
+            service_time_sec=j.service_time_sec,
         )
         for j in request.jobs
     ]
-    try:
-        result = hybrid_solve(
-            jobs=jobs,
-            duration_matrix=request.duration_matrix,
-            distance_matrix=request.distance_matrix,
-            coordinates=[tuple(c) for c in request.coordinates],
-            vehicle_capacity_kg=request.vehicle_capacity_kg,
+
+    vehicles = [
+        Vehicle(
+            vehicle_id=v.vehicle_id,
+            capacity_kg=v.capacity_kg,
+            start_location=v.start_location,
+            avg_kmpl_rated=v.avg_kmpl_rated,
+            fuel_price_per_l=v.fuel_price_per_l,
+            duty_start=v.duty_start,
+            duty_end=v.duty_end,
         )
+        for v in request.vehicles
+    ]
+
+    coordinates = [tuple(c) for c in request.coordinates]
+
+    cost_weights = None
+    if request.cost_weights:
+        cost_weights = CostWeights(
+            alpha=request.cost_weights.alpha,
+            delta=request.cost_weights.delta,
+            beta=request.cost_weights.beta,
+            gamma=request.cost_weights.gamma,
+            lateness_weight=request.cost_weights.lateness_weight,
+        )
+
+    try:
+        if request.auto_generate_windows and request.start_time > 0:
+            # Use ML ETA to auto-generate time windows
+            enriched_jobs, _ = build_time_windows_for_jobs(
+                jobs, coordinates, request.start_time, request.vehicle_speed_kph
+            )
+            result = solve_with_fallback(
+                jobs=enriched_jobs,
+                vehicles=vehicles,
+                duration_matrix=request.duration_matrix,
+                distance_matrix=request.distance_matrix,
+                coordinates=coordinates,
+                start_time=request.start_time,
+                cost_weights=cost_weights,
+                time_limit_seconds=request.solver_time_limit_seconds,
+            )
+        else:
+            # Use provided windows (or none)
+            result = solve_with_fallback(
+                jobs=jobs,
+                vehicles=vehicles,
+                duration_matrix=request.duration_matrix,
+                distance_matrix=request.distance_matrix,
+                coordinates=coordinates,
+                start_time=request.start_time,
+                cost_weights=cost_weights,
+                time_limit_seconds=request.solver_time_limit_seconds,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    vehicle_routes = [
+        VehicleRoute(vehicle_id=vid, stops=stops)
+        for vid, stops in result.routes.items()
+    ]
+
     return PickupDeliveryOptimizeResponse(
-        order=result.route,
+        routes=vehicle_routes,
         total_duration_seconds=result.total_duration_seconds,
         total_distance_meters=result.total_distance_meters,
+        total_lateness_seconds=result.total_lateness_seconds,
+        total_fuel_cost_rupees=result.total_fuel_cost_rupees,
+        total_load_ton_km=result.total_load_ton_km,
         solver_used=result.solver_used,
         feasible=result.feasible,
     )

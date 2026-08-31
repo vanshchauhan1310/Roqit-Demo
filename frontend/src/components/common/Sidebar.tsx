@@ -11,6 +11,7 @@ import {
 
 const navItems = [
   { label: "Dashboard Home", path: "/dashboard", icon: IconDashboard },
+  { label: "Live Assignment", path: "/live-ops", icon: IconDashboard },
   { label: "Trips", path: "/trips", icon: IconTrips },
   { label: "Vehicles", path: "/vehicles", icon: IconVehicle },
   { label: "Drivers", path: "/drivers", icon: IconDriver },

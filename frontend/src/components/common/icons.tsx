@@ -206,6 +206,28 @@ export function IconMapPin(props: IconProps) {
   );
 }
 
+export function IconInbox(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M21 13V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8" />
+      <polyline points="3 9 12 16 21 9" />
+      <path d="M3 13h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+    </svg>
+  );
+}
+
+export function IconTruck(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2" />
+      <path d="M15 18H9" />
+      <path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.62L18.3 9.38a1 1 0 0 0-.78-.38H14" />
+      <circle cx="6" cy="18" r="2" />
+      <circle cx="17" cy="18" r="2" />
+    </svg>
+  );
+}
+
 export function IconSparkle(props: IconProps) {
   return (
     <svg {...base} {...props}>

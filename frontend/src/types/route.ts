@@ -27,6 +27,9 @@ export interface Route {
   vehicle_id: string | null;
   pickup_time: string | null;
   planned_delivery_time: string | null;
+  capacity_kg?: number | null;
+  used_capacity_kg?: number | null;
+  frozen_until_sequence?: number | null;
 }
 
 export interface RouteStopInput {

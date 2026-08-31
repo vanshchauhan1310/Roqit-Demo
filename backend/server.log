@@ -1,0 +1,62 @@
+Running periodic LNS optimization...
+[AUDIT] LNS_RUN run_id=N/A old_cost=210.72 new_cost=210.72 improvement=0.00 accepted=False routes_affected=1 trips_reinserted=2 time_ms=1515 destroy=random repair=regret_2
+LNS optimization rejected: No improvement (threshold: 0.0)
+INFO:     127.0.0.1:50368 - "GET /health HTTP/1.1" 200 OK
+Processing trip assignment for TRP-9D596508
+INFO:     127.0.0.1:50379 - "POST /api/trips HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:50379 - "POST /api/trips HTTP/1.1" 422 Unprocessable Content
+INFO:     127.0.0.1:50379 - "POST /api/trips HTTP/1.1" 422 Unprocessable Content
+No feasible route for trip TRP-9D596508, creating new route
+[AUDIT] NEW_ROUTE_CREATED trip=TRP-9D596508 route=337a2966-6c30-4734-9586-58aa6ba7d17e vehicle=E2EVEH1 driver=E2EDRV1 version=greedy-v1
+Created new route 337a2966-6c30-4734-9586-58aa6ba7d17e for trip TRP-9D596508
+INFO:     127.0.0.1:50394 - "GET /api/trips/TRP-9D596508 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62552 - "POST /api/drivers HTTP/1.1" 201 Created
+INFO:     127.0.0.1:62553 - "POST /api/vehicles HTTP/1.1" 201 Created
+INFO:     127.0.0.1:62554 - "POST /api/vehicles HTTP/1.1" 201 Created
+Processing trip assignment for TRP-E824D599
+INFO:     127.0.0.1:62555 - "POST /api/trips HTTP/1.1" 202 Accepted
+[AUDIT] GREEDY_ASSIGNMENT trip=TRP-E824D599 route=337a2966-6c30-4734-9586-58aa6ba7d17e cost=6.30 dist_delta=3.43 dur_delta=5.15 delay_delta=0.00 feasible=True version=greedy-v1
+Assigned trip TRP-E824D599 to route 337a2966-6c30-4734-9586-58aa6ba7d17e
+Processing trip assignment for TRP-5362CF12
+INFO:     127.0.0.1:62558 - "POST /api/trips HTTP/1.1" 202 Accepted
+[AUDIT] GREEDY_ASSIGNMENT trip=TRP-5362CF12 route=337a2966-6c30-4734-9586-58aa6ba7d17e cost=16.61 dist_delta=9.06 dur_delta=13.59 delay_delta=0.00 feasible=True version=greedy-v1
+Assigned trip TRP-5362CF12 to route 337a2966-6c30-4734-9586-58aa6ba7d17e
+Processing trip assignment for TRP-4A7D88BD
+INFO:     127.0.0.1:62560 - "POST /api/trips HTTP/1.1" 202 Accepted
+[AUDIT] GREEDY_ASSIGNMENT trip=TRP-4A7D88BD route=337a2966-6c30-4734-9586-58aa6ba7d17e cost=14.09 dist_delta=7.69 dur_delta=11.53 delay_delta=0.00 feasible=True version=greedy-v1
+Assigned trip TRP-4A7D88BD to route 337a2966-6c30-4734-9586-58aa6ba7d17e
+Processing trip assignment for TRP-B506FA65
+INFO:     127.0.0.1:62562 - "POST /api/trips HTTP/1.1" 202 Accepted
+[AUDIT] GREEDY_ASSIGNMENT trip=TRP-B506FA65 route=337a2966-6c30-4734-9586-58aa6ba7d17e cost=18.18 dist_delta=9.92 dur_delta=14.88 delay_delta=0.00 feasible=True version=greedy-v1
+Assigned trip TRP-B506FA65 to route 337a2966-6c30-4734-9586-58aa6ba7d17e
+Processing trip assignment for TRP-BB031010
+INFO:     127.0.0.1:62564 - "POST /api/trips HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:62566 - "POST /api/trips HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:62568 - "GET /api/trips/TRP-E824D599 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62569 - "GET /api/trips/TRP-5362CF12 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62570 - "GET /api/trips/TRP-4A7D88BD HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62571 - "GET /api/trips/TRP-B506FA65 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62572 - "GET /api/trips/TRP-BB031010 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62573 - "GET /api/trips/TRP-7ACB1856 HTTP/1.1" 200 OK
+[AUDIT] GREEDY_ASSIGNMENT trip=TRP-BB031010 route=337a2966-6c30-4734-9586-58aa6ba7d17e cost=43.60 dist_delta=23.80 dur_delta=35.70 delay_delta=0.00 feasible=True version=greedy-v1
+Assigned trip TRP-BB031010 to route 337a2966-6c30-4734-9586-58aa6ba7d17e
+Processing trip assignment for TRP-7ACB1856
+[AUDIT] GREEDY_ASSIGNMENT trip=TRP-7ACB1856 route=337a2966-6c30-4734-9586-58aa6ba7d17e cost=13.10 dist_delta=7.15 dur_delta=10.72 delay_delta=0.00 feasible=True version=greedy-v1
+Assigned trip TRP-7ACB1856 to route 337a2966-6c30-4734-9586-58aa6ba7d17e
+INFO:     127.0.0.1:62576 - "GET /api/trips/TRP-E824D599 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62577 - "GET /api/trips/TRP-5362CF12 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62578 - "GET /api/trips/TRP-4A7D88BD HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62579 - "GET /api/trips/TRP-B506FA65 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62580 - "GET /api/trips/TRP-BB031010 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62581 - "GET /api/trips/TRP-7ACB1856 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62582 - "GET /api/routes?limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62583 - "POST /api/routes/lns/trigger HTTP/1.1" 202 Accepted
+Running periodic LNS optimization...
+[AUDIT] LNS_RUN run_id=N/A old_cost=261.23 new_cost=229.83 improvement=31.40 accepted=True routes_affected=3 trips_reinserted=3 time_ms=4770 destroy=random repair=regret_2
+LNS optimization completed: improvement=31.40
+INFO:     127.0.0.1:62586 - "GET /api/trips/TRP-E824D599 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62587 - "GET /api/trips/TRP-5362CF12 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62588 - "GET /api/trips/TRP-4A7D88BD HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62589 - "GET /api/trips/TRP-B506FA65 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62590 - "GET /api/trips/TRP-BB031010 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62591 - "GET /api/trips/TRP-7ACB1856 HTTP/1.1" 200 OK

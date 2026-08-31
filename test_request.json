@@ -1,0 +1,15 @@
+{
+  "jobs": [
+    {"trip_id": "t1", "pickup_stop_index": 1, "delivery_stop_index": 2, "load_weight_kg": 1000, "pickup_earliest": 0, "pickup_latest": 86400, "delivery_earliest": 0, "delivery_latest": 86400, "service_time_sec": 300},
+    {"trip_id": "t2", "pickup_stop_index": 3, "delivery_stop_index": 4, "load_weight_kg": 2000, "pickup_earliest": 0, "pickup_latest": 86400, "delivery_earliest": 0, "delivery_latest": 86400, "service_time_sec": 300}
+  ],
+  "vehicles": [
+    {"vehicle_id": "v1", "capacity_kg": 5000, "start_location": 0, "avg_kmpl_rated": 8.5, "fuel_price_per_l": 92.5}
+  ],
+  "duration_matrix": [[0,600,1200,1800,2400],[600,0,600,1200,1800],[1200,600,0,600,1200],[1800,1200,600,0,600],[2400,1800,1200,600,0]],
+  "distance_matrix": [[0,10000,20000,30000,40000],[10000,0,10000,20000,30000],[20000,10000,0,10000,20000],[30000,20000,10000,0,10000],[40000,30000,20000,10000,0]],
+  "coordinates": [[0,0],[1,1],[2,2],[3,3],[4,4]],
+  "start_time": 0,
+  "auto_generate_windows": false,
+  "solver_time_limit_seconds": 10
+}

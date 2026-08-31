@@ -48,11 +48,11 @@ async def predict_trip_cost(payload: dict) -> dict:
 
 
 async def optimize_pickup_delivery_route(payload: dict) -> dict:
-    """Calls the ML service's hybrid pickup-delivery optimizer. payload shape:
-    {jobs, duration_matrix, distance_matrix, coordinates, vehicle_capacity_kg}.
-    Longer timeout than the /predict/* calls above - LNS search on larger job
-    sets takes noticeably longer than a single model.predict()."""
-    async with httpx.AsyncClient(base_url=settings.ML_SERVICE_URL, timeout=30.0) as client:
+    """Calls the ML service's optimizer. payload shape:
+    {jobs, vehicles, duration_matrix, distance_matrix, coordinates, start_time, auto_generate_windows,
+     vehicle_speed_kph, cost_weights, solver_time_limit_seconds}.
+    Longer timeout than the /predict/* calls above - OR-Tools search takes longer."""
+    async with httpx.AsyncClient(base_url=settings.ML_SERVICE_URL, timeout=60.0) as client:
         response = await client.post("/optimize/pickup-delivery", json=payload)
         response.raise_for_status()
         return response.json()

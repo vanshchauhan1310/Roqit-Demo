@@ -4,10 +4,15 @@ import { TripsToolbar } from "@/components/trip/TripsToolbar";
 import { RoutesTable } from "@/components/trip/RoutesTable";
 import { CreateTripModal } from "@/components/trip/CreateTripModal";
 import { CreateRouteModal } from "@/components/trip/CreateRouteModal";
-import { IconPlus, IconRoute } from "@/components/common/icons";
+import { TripsTable } from "@/components/trip/TripsTable";
+import { IconPlus, IconRoute, IconInbox, IconTruck, IconMapPin } from "@/components/common/icons";
 import { useRoutes } from "@/hooks/useRoutes";
+import { useTrips } from "@/hooks/useTrips";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import type { Route } from "@/types/route";
+import type { Trip } from "@/types/trip";
+
+type ViewTab = "incoming" | "assignment" | "routes";
 
 function routeMatches(route: Route, search: string, status: string, driver: string, pickupDate: string): boolean {
   const q = search.toLowerCase();
@@ -34,9 +39,35 @@ function routeMatches(route: Route, search: string, status: string, driver: stri
   return true;
 }
 
+function tripMatches(trip: Trip, search: string, status: string, driver: string, pickupDate: string): boolean {
+  const q = search.toLowerCase();
+  if (status && trip.status?.toLowerCase() !== status.toLowerCase()) return false;
+  if (driver && trip.driver_id !== driver) return false;
+  if (pickupDate && trip.pickup_time) {
+    const day = new Date(trip.pickup_time).toISOString().slice(0, 10);
+    if (day !== pickupDate) return false;
+  }
+  if (q) {
+    const haystack = [
+      trip.trip_id,
+      trip.origin,
+      trip.destination,
+      trip.driver_id,
+      trip.vehicle_id,
+      trip.route_id,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    if (!haystack.includes(q)) return false;
+  }
+  return true;
+}
+
 export function TripsPage() {
   const [createTripOpen, setCreateTripOpen] = useState(false);
   const [createRouteOpen, setCreateRouteOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<ViewTab>("incoming");
 
   const [search, setSearch] = useState("");
   const [pickupDate, setPickupDate] = useState("");
@@ -45,13 +76,30 @@ export function TripsPage() {
 
   const debouncedSearch = useDebouncedValue(search);
 
-  const { data: routes, isLoading, isError } = useRoutes();
+  const { data: routes, isLoading: routesLoading, isError: routesError } = useRoutes();
+  const { data: incomingTrips, isLoading: incomingLoading, isError: incomingError } = useTrips(1, { unassigned: true });
+  const { data: assignedTrips, isLoading: assignedLoading, isError: assignedError } = useTrips(1, {});
+
+  const isLoading = routesLoading || incomingLoading || assignedLoading;
+  const isError = routesError || incomingError || assignedError;
 
   const filteredRoutes = useMemo(() => {
     const all = routes ?? [];
     if (!debouncedSearch && !status && !driver && !pickupDate) return all;
     return all.filter((r) => routeMatches(r, debouncedSearch, status, driver, pickupDate));
   }, [routes, debouncedSearch, status, driver, pickupDate]);
+
+  const filteredIncomingTrips = useMemo(() => {
+    const all = incomingTrips ?? [];
+    if (!debouncedSearch && !status && !driver && !pickupDate) return all;
+    return all.filter((t) => tripMatches(t, debouncedSearch, status, driver, pickupDate));
+  }, [incomingTrips, debouncedSearch, status, driver, pickupDate]);
+
+  const filteredAssignedTrips = useMemo(() => {
+    const all = (assignedTrips ?? []).filter((t) => t.route_id);
+    if (!debouncedSearch && !status && !driver && !pickupDate) return all;
+    return all.filter((t) => tripMatches(t, debouncedSearch, status, driver, pickupDate));
+  }, [assignedTrips, debouncedSearch, status, driver, pickupDate]);
 
   const statusOptions = useMemo(
     () => Array.from(new Set((routes ?? []).map((r) => r.status).filter((s): s is string => Boolean(s)))).sort(),
@@ -62,6 +110,12 @@ export function TripsPage() {
     () => Array.from(new Set((routes ?? []).map((r) => r.driver_id).filter((d): d is string => Boolean(d)))).sort(),
     [routes],
   );
+
+  const tabConfig: { key: ViewTab; label: string; icon: typeof IconInbox; count: number }[] = [
+    { key: "incoming", label: "Incoming", icon: IconInbox, count: filteredIncomingTrips.length },
+    { key: "assignment", label: "Assignment", icon: IconTruck, count: filteredAssignedTrips.length },
+    { key: "routes", label: "Routes", icon: IconMapPin, count: filteredRoutes.length },
+  ];
 
   return (
     <div className="space-y-6">
@@ -102,12 +156,35 @@ export function TripsPage() {
         driver={driver}
         onDriverChange={setDriver}
         driverOptions={driverOptions}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        tabs={tabConfig}
       />
 
-      {isLoading && <p className="text-sm text-gray-500">Loading routes…</p>}
-      {isError && <p className="text-sm text-red-600">Failed to load routes.</p>}
+      {isLoading && <p className="text-sm text-gray-500">Loading…</p>}
+      {isError && <p className="text-sm text-red-600">Failed to load data.</p>}
 
-      {routes && (
+      {activeTab === "incoming" && incomingTrips && (
+        <div className="space-y-3">
+          {filteredIncomingTrips.length === 0 ? (
+            <p className="text-sm text-gray-500">No incoming trips.</p>
+          ) : (
+            <TripsTable trips={filteredIncomingTrips} />
+          )}
+        </div>
+      )}
+
+      {activeTab === "assignment" && assignedTrips && (
+        <div className="space-y-3">
+          {filteredAssignedTrips.length === 0 ? (
+            <p className="text-sm text-gray-500">No assigned trips.</p>
+          ) : (
+            <TripsTable trips={filteredAssignedTrips} />
+          )}
+        </div>
+      )}
+
+      {activeTab === "routes" && routes && (
         <div className="space-y-3">
           {filteredRoutes.length === 0 ? (
             <p className="text-sm text-gray-500">No routes match these filters.</p>

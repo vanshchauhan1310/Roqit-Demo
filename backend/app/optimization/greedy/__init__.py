@@ -1,0 +1,1 @@
+"""Greedy insertion module."""

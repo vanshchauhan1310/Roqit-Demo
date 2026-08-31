@@ -15,3 +15,4 @@ from app.models.maintenance_event import MaintenanceEvent  # noqa: E402,F401
 from app.models.driver_hours import DriverHours  # noqa: E402,F401
 from app.models.realtime_fleet_status import RealtimeFleetStatus  # noqa: E402,F401
 from app.models.delay_prediction import DelayPrediction  # noqa: E402,F401
+from app.models.optimization_audit import RouteAssignment, OptimizationRun  # noqa: E402,F401

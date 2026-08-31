@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createTrip } from "@/api/trips";
 import { geocodeAddress } from "@/api/geocode";
 import { useRoadRoute } from "@/hooks/useRoadRoute";
-import { RouteMapPreview } from "./RouteMapPreview";
+import { RouteMapPreview, type StopType } from "./RouteMapPreview";
 import {
   IconMapPin,
   IconX,
@@ -47,7 +47,20 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
   const queryClient = useQueryClient();
 
   const mapStops = useMemo(() => {
-    const result: { key: string; lat: number; lng: number; label: string; sequence: number }[] = [];
+    const result: { key: string; lat: number; lng: number; label: string; sequence: number; type: StopType }[] = [];
+    
+    // Depot at pickup location (for trip creation, depot = pickup location)
+    if (pickup.latitude != null && pickup.longitude != null) {
+      result.push({
+        key: "depot",
+        lat: pickup.latitude,
+        lng: pickup.longitude,
+        label: "Depot (Start)",
+        sequence: 0,
+        type: "depot",
+      });
+    }
+    
     if (pickup.latitude != null && pickup.longitude != null) {
       result.push({
         key: "pickup",
@@ -55,6 +68,7 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
         lng: pickup.longitude,
         label: pickup.locationName || "Pickup",
         sequence: 1,
+        type: "pickup",
       });
     }
     if (drop.latitude != null && drop.longitude != null) {
@@ -64,6 +78,7 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
         lng: drop.longitude,
         label: drop.locationName || "Drop",
         sequence: 2,
+        type: "delivery",
       });
     }
     return result;

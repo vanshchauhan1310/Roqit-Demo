@@ -131,23 +131,21 @@ def _insert_job_hybrid(
     pair_model,
     k_spatial: int,
     top_m: int,
+    start_time: int = 0,
 ) -> list[int]:
     loads = opt._load_at_positions(route, placed_jobs) if route else []
 
-    for widen_attempt in (1, 3):  # widen the search once if the first shortlist has nothing feasible
+    for widen_attempt in (1, 3):
         ranked_pairs = _rank_candidates(
             route, job, duration_matrix, distance_matrix, coordinates, vehicle_capacity_kg,
             loads, pair_model, k_spatial * widen_attempt, top_m * widen_attempt,
         )
         for pickup_pos, delivery_pos in ranked_pairs:
             candidate_route = opt.insert_pair(route, job, pickup_pos, delivery_pos)
-            if opt.route_is_feasible(candidate_route, placed_jobs + [job], vehicle_capacity_kg):
+            if opt.route_is_feasible(candidate_route, placed_jobs + [job], vehicle_capacity_kg, duration_matrix, start_time) != float('inf'):
                 return candidate_route
 
-    # Nothing in even the widened ML shortlist verified feasible - fall back to
-    # opt.py's own exact method for this one job, so a route is never returned
-    # without having been exactly verified.
-    result = opt.best_pair_insertion(route, job, duration_matrix, vehicle_capacity_kg, placed_jobs)
+    result = opt.best_pair_insertion(route, job, duration_matrix, vehicle_capacity_kg, placed_jobs, start_time=start_time)
     if result is None:
         return route + [job.pickup_idx, job.delivery_idx]
     pickup_pos, delivery_pos, _ = result
@@ -164,6 +162,7 @@ def hybrid_solve(
     top_m: int = 20,
     iterations: int = 200,
     seed: int | None = None,
+    start_time: int = 0,
 ) -> opt.SolveResult:
     if not jobs:
         raise ValueError("hybrid_solve() requires at least one job")
@@ -173,7 +172,7 @@ def hybrid_solve(
 
     if num_stops < HYBRID_MIN_STOPS or models is None:
         result = opt.solve(
-            jobs, duration_matrix, distance_matrix, vehicle_capacity_kg, iterations=iterations, seed=seed
+            jobs, duration_matrix, distance_matrix, vehicle_capacity_kg, iterations=iterations, seed=seed, start_time=start_time
         )
         return result
 
@@ -186,11 +185,12 @@ def hybrid_solve(
         else:
             route = _insert_job_hybrid(
                 route, placed, job, duration_matrix, distance_matrix, coordinates,
-                vehicle_capacity_kg, pair_model, k_spatial, top_m,
+                vehicle_capacity_kg, pair_model, k_spatial, top_m, start_time,
             )
         placed.append(job)
 
-    feasible = opt.route_is_feasible(route, jobs, vehicle_capacity_kg)
+    total_lateness = opt.route_is_feasible(route, jobs, vehicle_capacity_kg, duration_matrix, start_time)
+    feasible = total_lateness != float('inf')
     assert feasible, "hybrid_solve() produced an infeasible route for a supposedly satisfiable instance"
 
     return opt.SolveResult(
@@ -198,5 +198,6 @@ def hybrid_solve(
         total_duration_seconds=opt.route_cost(route, duration_matrix),
         total_distance_meters=opt.route_distance(route, distance_matrix),
         feasible=feasible,
+        total_lateness_seconds=total_lateness if feasible else 0.0,
         solver_used="hybrid",
     )

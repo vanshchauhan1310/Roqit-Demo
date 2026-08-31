@@ -1,13 +1,13 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.schemas.driver_intelligence import DriverIntelligenceRead
 from app.schemas.eta_prediction import EtaPredictionRead
 from app.schemas.fuel_cost import FuelCostEstimateRead, TripCostPredictionRead
-from app.schemas.trip import TripCreate, TripFilterOptions, TripOutcomeUpdate, TripRead, TripUpdateStatus
+from app.schemas.trip import TripCreate, TripFilterOptions, TripOutcomeUpdate, TripRead, TripUpdateStatus, TripReceived
 from app.schemas.vehicle_intelligence import VehicleIntelligenceRead
 from app.services import (
     driver_intelligence_service,
@@ -16,18 +16,28 @@ from app.services import (
     trip_service,
     vehicle_intelligence_service,
 )
+from app.workers.trip_assignment_worker import create_trip_assignment_job
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
 
-@router.post("", response_model=TripRead, status_code=201)
+@router.post("", response_model=TripReceived, status_code=status.HTTP_202_ACCEPTED)
 async def create_trip(trip_in: TripCreate, db: Session = Depends(get_db)):
+    """Create a new trip and queue it for assignment.
+
+    Returns immediately with RECEIVED status. Assignment happens asynchronously.
+    """
     try:
-        return await trip_service.create_trip(db, trip_in)
+        trip = await trip_service.create_trip(db, trip_in)
     except trip_service.DuplicateIdError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except trip_service.LoadExceedsCapacityError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    # Queue for async assignment
+    create_trip_assignment_job(trip.trip_id)
+
+    return TripReceived(trip_ref=trip.trip_id, status="RECEIVED")
 
 
 @router.get("", response_model=list[TripRead])

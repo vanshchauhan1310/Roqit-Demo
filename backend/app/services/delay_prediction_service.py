@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import httpx
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
@@ -198,12 +199,14 @@ async def engineer_features(db: Session, trip: Trip) -> dict:
     return features
 
 
-def store_prediction(db: Session, trip: Trip, features: dict, result: dict) -> DelayPrediction:
+def store_prediction(
+    db: Session, trip: Trip, features: dict, result: dict, model_version: str = MODEL_VERSION
+) -> DelayPrediction:
     prediction = DelayPrediction(
         trip_id=trip.trip_id,
         delay_probability=result["delay_probability"],
         is_delayed_prediction=result["is_delayed_prediction"],
-        model_version=MODEL_VERSION,
+        model_version=model_version,
         features=features,
     )
     db.add(prediction)
@@ -212,11 +215,70 @@ def store_prediction(db: Session, trip: Trip, features: dict, result: dict) -> D
     return prediction
 
 
+# Deterministic heuristic used when the ML service is unreachable - mirrors the
+# ETA path's "ML first, rule-based fallback" pattern so the endpoint never 500s
+# just because the model server is restarting.
+_WEATHER_DELAY_RISK = {
+    "Clear": 0.0, "Clouds": 0.02, "Extreme Heat": 0.08, "Drizzle": 0.08,
+    "Rain": 0.15, "Storm": 0.25, "Thunderstorm": 0.25, "Snow": 0.3, "Fog": 0.18,
+    "Mist": 0.1, "Haze": 0.12, "Dust": 0.12, "Sand": 0.12, "Squall": 0.25,
+    "Tornado": 0.4,
+}
+_TRAFFIC_DELAY_RISK = {
+    "Low": 0.0, "Medium": 0.08, "Moderate": 0.08, "High": 0.18, "Severe": 0.32,
+}
+_ROAD_DELAY_RISK = {
+    "Highway": 0.0, "Expressway": 0.0, "City Road": 0.08, "Rural Road": 0.05,
+    "State Road": 0.08, "Urban": 0.08, "Rural": 0.05, "Mountain": 0.12,
+}
+_WEATHER_DELAY_MINUTES = {
+    "Clear": 0.0, "Clouds": 5.0, "Extreme Heat": 20.0, "Drizzle": 15.0,
+    "Rain": 30.0, "Storm": 55.0, "Thunderstorm": 55.0, "Snow": 65.0, "Fog": 35.0,
+    "Mist": 15.0, "Haze": 20.0, "Dust": 20.0, "Sand": 20.0, "Squall": 55.0,
+    "Tornado": 90.0,
+}
+_TRAFFIC_DELAY_MINUTES = {
+    "Low": 0.0, "Medium": 15.0, "Moderate": 15.0, "High": 35.0, "Severe": 60.0,
+}
+
+
+def _rule_based_delay_risk(features: dict) -> float:
+    risk = 0.05
+    risk += _WEATHER_DELAY_RISK.get(features.get("weather_condition"), 0.1)
+    risk += _TRAFFIC_DELAY_RISK.get(features.get("traffic_density"), 0.05)
+    risk += _ROAD_DELAY_RISK.get(features.get("road_type"), 0.05)
+    if features.get("planned_distance_km", 0) > 1500:
+        risk += 0.05
+    risk += features.get("route_delay_rate_to_date", 0.0) * 0.15
+    risk += features.get("driver_delay_rate_to_date", 0.0) * 0.1
+    return round(min(max(risk, 0.01), 0.95), 4)
+
+
+def _rule_based_expected_delay_minutes(features: dict) -> float:
+    minutes = features.get("planned_duration_hours", 0.0) * 6
+    minutes += _WEATHER_DELAY_MINUTES.get(features.get("weather_condition"), 20.0)
+    minutes += _TRAFFIC_DELAY_MINUTES.get(features.get("traffic_density"), 10.0)
+    minutes += features.get("route_delay_rate_to_date", 0.0) * 60
+    return round(minutes, 1)
+
+
 async def predict_delay_for_trip(db: Session, trip: Trip) -> DelayPrediction:
-    """Engineer Features -> Load delay_model.pkl -> Predict -> Store Prediction."""
+    """Engineer Features -> Load delay_model.pkl -> Predict -> Store Prediction.
+
+    If the ML service is unreachable (restarting, connection dropped), falls
+    back to a deterministic rule-based risk score rather than surfacing a 500.
+    """
     features = await engineer_features(db, trip)
-    result = await ml_client.predict_delay(features)
-    return store_prediction(db, trip, features, result)
+    try:
+        result = await ml_client.predict_delay(features)
+        model_version = MODEL_VERSION
+    except httpx.HTTPError:
+        result = {
+            "delay_probability": _rule_based_delay_risk(features),
+            "is_delayed_prediction": _rule_based_delay_risk(features) >= 0.5,
+        }
+        model_version = "rule_based_fallback"
+    return store_prediction(db, trip, features, result, model_version)
 
 
 async def predict_expected_delay_for_trip(db: Session, trip: Trip) -> dict:
@@ -224,4 +286,7 @@ async def predict_expected_delay_for_trip(db: Session, trip: Trip) -> dict:
     (minutes) regressor instead. Not persisted - this is a lighter-weight, display-only
     prediction rather than the audited DelayPrediction record."""
     features = await engineer_features(db, trip)
-    return await ml_client.predict_expected_delay(features)
+    try:
+        return await ml_client.predict_expected_delay(features)
+    except httpx.HTTPError:
+        return {"predicted_delay_minutes": _rule_based_expected_delay_minutes(features)}

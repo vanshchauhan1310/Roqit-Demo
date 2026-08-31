@@ -1,7 +1,12 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
+
+from app.core.service_area import (
+    TripOutsideServiceAreaError,
+    validate_trip_within_service_area,
+)
 
 
 class TripBase(BaseModel):
@@ -44,6 +49,7 @@ class TripBase(BaseModel):
     harsh_braking_count: Optional[int] = None
     harsh_accel_count: Optional[int] = None
     stop_count: int = 0
+    route_id: Optional[str] = None  # set by the trip-assignment worker
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -75,6 +81,12 @@ class TripFilterOptions(BaseModel):
     drivers: list[str]
 
 
+class TripReceived(BaseModel):
+    """Response for trip ingestion - returns immediately with RECEIVED status."""
+    trip_ref: str
+    status: str  # "RECEIVED"
+
+
 class TripCreate(BaseModel):
     """A Trip is now just a single pickup + single drop (origin/destination) —
     driver, vehicle, and pickup_time are assigned later at the Route level
@@ -99,3 +111,17 @@ class TripCreate(BaseModel):
     road_type: Optional[str] = None
     traffic_density: Optional[str] = None
     fuel_price_per_l: Optional[float] = None
+
+    @model_validator(mode="after")
+    def check_within_service_area(self) -> "TripCreate":
+        """Hyderabad-only service: reject trips outside the service boundary."""
+        try:
+            validate_trip_within_service_area(
+                self.gps_start_lat,
+                self.gps_start_lon,
+                self.gps_end_lat,
+                self.gps_end_lon,
+            )
+        except TripOutsideServiceAreaError as exc:
+            raise ValueError(str(exc)) from exc
+        return self

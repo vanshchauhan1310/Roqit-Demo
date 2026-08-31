@@ -24,6 +24,8 @@ from typing import Literal
 
 Matrix = list[list[float]]
 
+LATENESS_WEIGHT = 60.0
+
 
 @dataclass
 class Job:
@@ -31,6 +33,11 @@ class Job:
     pickup_idx: int
     delivery_idx: int
     load_weight_kg: float = 0.0
+    pickup_earliest: int | None = None
+    pickup_latest: int | None = None
+    delivery_earliest: int | None = None
+    delivery_latest: int | None = None
+    service_time_sec: int = 300
 
 
 @dataclass
@@ -39,6 +46,7 @@ class SolveResult:
     total_duration_seconds: float
     total_distance_meters: float
     feasible: bool
+    total_lateness_seconds: float = 0.0
     solver_used: Literal["exact", "hybrid"] = "exact"
 
 
@@ -46,31 +54,97 @@ def route_cost(route: list[int], duration_matrix: Matrix) -> float:
     return sum(duration_matrix[route[i]][route[i + 1]] for i in range(len(route) - 1))
 
 
+def route_total_cost(
+    route: list[int],
+    duration_matrix: Matrix,
+    jobs: list[Job],
+    vehicle_capacity_kg: float | None,
+    start_time: int = 0,
+) -> float:
+    """Total cost = travel duration + lateness penalty."""
+    duration = route_cost(route, duration_matrix)
+    lateness = route_is_feasible(route, jobs, vehicle_capacity_kg, duration_matrix, start_time)
+    if lateness == float('inf'):
+        return float('inf')
+    return duration + lateness * LATENESS_WEIGHT
+
+
 def route_distance(route: list[int], distance_matrix: Matrix) -> float:
     return sum(distance_matrix[route[i]][route[i + 1]] for i in range(len(route) - 1))
 
 
-def route_is_feasible(route: list[int], jobs: list[Job], vehicle_capacity_kg: float | None) -> bool:
-    """A route is feasible iff every job's pickup precedes its own delivery,
-    and (when vehicle_capacity_kg is given) cumulative load never exceeds it
-    at any point along the route. vehicle_capacity_kg=None means unconstrained
-    - used when the vehicle/its capacity isn't known yet at optimize-time."""
+def _calculate_lateness(
+    route: list[int],
+    jobs: list[Job],
+    duration_matrix: Matrix,
+    start_time: int = 0,
+) -> float:
+    """Calculate total lateness in seconds for a route given time windows.
+    Returns 0 if all windows met, positive seconds if late."""
+    job_by_stop = {}
+    for job in jobs:
+        job_by_stop[job.pickup_idx] = job
+        job_by_stop[job.delivery_idx] = job
+
+    current_time = start_time
+    total_lateness = 0.0
+
+    for i, stop_idx in enumerate(route):
+        job = job_by_stop.get(stop_idx)
+        if job is None:
+            continue
+
+        is_pickup = stop_idx == job.pickup_idx
+        earliest = job.pickup_earliest if is_pickup else job.delivery_earliest
+        latest = job.pickup_latest if is_pickup else job.delivery_latest
+
+        if earliest is not None and latest is not None:
+            if current_time < earliest:
+                current_time = earliest
+            elif current_time > latest:
+                total_lateness += current_time - latest
+
+        current_time += job.service_time_sec
+        if i + 1 < len(route):
+            current_time += duration_matrix[stop_idx][route[i + 1]]
+
+    return total_lateness
+
+
+def route_is_feasible(
+    route: list[int],
+    jobs: list[Job],
+    vehicle_capacity_kg: float | None,
+    duration_matrix: Matrix | None = None,
+    start_time: int = 0,
+) -> float:
+    """Check feasibility and return total lateness in seconds.
+    Returns 0.0 if feasible with no lateness, positive if late, float('inf') if infeasible.
+    
+    Feasibility checks:
+    - No duplicate stops
+    - Pickup before delivery for each job
+    - Vehicle capacity not exceeded
+    - Time windows (soft constraint - lateness returned as penalty)"""
     if len(route) != len(set(route)):
-        return False
+        return float('inf')
 
     position = {stop: i for i, stop in enumerate(route)}
     for job in jobs:
         if job.pickup_idx not in position or job.delivery_idx not in position:
-            return False
+            return float('inf')
         if position[job.pickup_idx] >= position[job.delivery_idx]:
-            return False
+            return float('inf')
 
     if vehicle_capacity_kg is not None:
         for load in _load_at_positions(route, jobs):
             if load > vehicle_capacity_kg + 1e-9 or load < -1e-9:
-                return False
+                return float('inf')
 
-    return True
+    if duration_matrix is not None:
+        return _calculate_lateness(route, jobs, duration_matrix, start_time)
+
+    return 0.0
 
 
 def insertion_delta(route: list[int], position: int, stop_idx: int, duration_matrix: Matrix) -> float:
@@ -126,6 +200,7 @@ def best_pair_insertion(
     placed_jobs: list[Job],
     pickup_positions: list[int] | None = None,
     delivery_positions: list[int] | None = None,
+    start_time: int = 0,
 ) -> tuple[int, int, float] | None:
     """Exhaustive search over every feasible (pickup_pos, delivery_pos) pair -
     O(n^2) candidate positions in len(route) by default. Pass
@@ -135,7 +210,7 @@ def best_pair_insertion(
     delivery_pos, added_cost) for the cheapest FEASIBLE insertion found, or
     None if nothing in the searched candidate set is feasible."""
     n = len(route)
-    base_cost = route_cost(route, duration_matrix)
+    base_cost = route_total_cost(route, duration_matrix, placed_jobs, vehicle_capacity_kg, start_time)
     pickup_candidates = pickup_positions if pickup_positions is not None else list(range(n + 1))
 
     best: tuple[int, int, float] | None = None
@@ -147,15 +222,23 @@ def best_pair_insertion(
             if not (pickup_pos <= delivery_pos <= n):
                 continue
             candidate_route = insert_pair(route, job, pickup_pos, delivery_pos)
-            if not route_is_feasible(candidate_route, placed_jobs + [job], vehicle_capacity_kg):
+            candidate_cost = route_total_cost(
+                candidate_route, duration_matrix, placed_jobs + [job], vehicle_capacity_kg, start_time
+            )
+            if candidate_cost == float('inf'):
                 continue
-            added_cost = route_cost(candidate_route, duration_matrix) - base_cost
+            added_cost = candidate_cost - base_cost
             if best is None or added_cost < best[2]:
                 best = (pickup_pos, delivery_pos, added_cost)
     return best
 
 
-def construct_greedy(jobs: list[Job], duration_matrix: Matrix, vehicle_capacity_kg: float | None) -> list[int]:
+def construct_greedy(
+    jobs: list[Job],
+    duration_matrix: Matrix,
+    vehicle_capacity_kg: float | None,
+    start_time: int = 0,
+) -> list[int]:
     """Builds a route from empty by inserting jobs one at a time, in input
     order, at each job's cheapest feasible position (cheapest insertion
     heuristic)."""
@@ -165,13 +248,8 @@ def construct_greedy(jobs: list[Job], duration_matrix: Matrix, vehicle_capacity_
         if not route:
             route = [job.pickup_idx, job.delivery_idx]
         else:
-            result = best_pair_insertion(route, job, duration_matrix, vehicle_capacity_kg, placed)
+            result = best_pair_insertion(route, job, duration_matrix, vehicle_capacity_kg, placed, start_time=start_time)
             if result is None:
-                # No feasible slot anywhere (e.g. this job's own weight can never
-                # fit) - append unconstrained rather than silently drop the job.
-                # solve()'s final feasibility assertion is the real safety net:
-                # if the instance is genuinely infeasible, it fails loudly here
-                # instead of returning a route that quietly violates capacity.
                 route = route + [job.pickup_idx, job.delivery_idx]
             else:
                 pickup_pos, delivery_pos, _ = result
@@ -199,6 +277,7 @@ def _repair(
     duration_matrix: Matrix,
     vehicle_capacity_kg: float | None,
     rng: random.Random,
+    start_time: int = 0,
 ) -> list[int]:
     """Re-inserts each removed job, one at a time in randomized order, via
     best_pair_insertion - each job goes back in as a pickup+delivery unit."""
@@ -207,7 +286,7 @@ def _repair(
     order = list(removed_jobs)
     rng.shuffle(order)
     for job in order:
-        result = best_pair_insertion(route, job, duration_matrix, vehicle_capacity_kg, remaining_jobs)
+        result = best_pair_insertion(route, job, duration_matrix, vehicle_capacity_kg, remaining_jobs, start_time=start_time)
         if result is None:
             route = route + [job.pickup_idx, job.delivery_idx]
         else:
@@ -225,6 +304,7 @@ def solve(
     iterations: int = 200,
     destroy_fraction: float = 0.25,
     seed: int | None = None,
+    start_time: int = 0,
 ) -> SolveResult:
     """Constructs a route via cheapest-insertion, then improves it with
     `iterations` rounds of pair-atomic destroy-and-repair (LNS), keeping the
@@ -235,20 +315,21 @@ def solve(
         raise ValueError("solve() requires at least one job")
 
     rng = random.Random(seed)
-    best_route = construct_greedy(jobs, duration_matrix, vehicle_capacity_kg)
-    best_cost = route_cost(best_route, duration_matrix)
+    best_route = construct_greedy(jobs, duration_matrix, vehicle_capacity_kg, start_time)
+    best_cost = route_total_cost(best_route, duration_matrix, jobs, vehicle_capacity_kg, start_time)
 
     for _ in range(iterations):
         partial_route, removed_jobs = _destroy(best_route, jobs, destroy_fraction, rng)
-        candidate_route = _repair(partial_route, jobs, removed_jobs, duration_matrix, vehicle_capacity_kg, rng)
-        if not route_is_feasible(candidate_route, jobs, vehicle_capacity_kg):
+        candidate_route = _repair(partial_route, jobs, removed_jobs, duration_matrix, vehicle_capacity_kg, rng, start_time)
+        candidate_cost = route_total_cost(candidate_route, duration_matrix, jobs, vehicle_capacity_kg, start_time)
+        if candidate_cost == float('inf'):
             continue
-        candidate_cost = route_cost(candidate_route, duration_matrix)
         if candidate_cost < best_cost:
             best_route = candidate_route
             best_cost = candidate_cost
 
-    feasible = route_is_feasible(best_route, jobs, vehicle_capacity_kg)
+    total_lateness = route_is_feasible(best_route, jobs, vehicle_capacity_kg, duration_matrix, start_time)
+    feasible = total_lateness != float('inf')
     assert feasible, "opt.solve() produced an infeasible route for a supposedly satisfiable instance"
 
     return SolveResult(
@@ -256,5 +337,6 @@ def solve(
         total_duration_seconds=route_cost(best_route, duration_matrix),
         total_distance_meters=route_distance(best_route, distance_matrix),
         feasible=feasible,
+        total_lateness_seconds=total_lateness if feasible else 0.0,
         solver_used="exact",
     )

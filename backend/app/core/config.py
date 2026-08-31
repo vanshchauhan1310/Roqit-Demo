@@ -27,5 +27,27 @@ class Settings(BaseSettings):
     # every trip's ML features (fuel_price_per_l) instead of asking per-trip.
     DEFAULT_FUEL_PRICE_PER_L: float = 92.5
 
+    # Redis for queue and caching
+    REDIS_URL: str = "redis://localhost:6379/0"
+
+    # Queue settings
+    TRIP_ASSIGNMENT_QUEUE: str = "trip-assignment"
+    QUEUE_CONCURRENCY: int = 5
+
+    # Optimization settings
+    GREEDY_MAX_CANDIDATES: int = 50
+    GREEDY_MAX_PICKUP_DISTANCE_KM: float = 50.0
+    LNS_DESTROY_PERCENTAGE: float = 0.2
+    LNS_INTERVAL_MINUTES: int = 10
+    # Multi-iteration LNS search: each trigger runs up to LNS_MAX_ITERATIONS
+    # destroy/repair cycles within LNS_ITERATION_BUDGET_SECONDS, keeping every
+    # improvement (hill-climbing) and rolling back rejected candidates.
+    LNS_MAX_ITERATIONS: int = 30
+    LNS_ITERATION_BUDGET_SECONDS: int = 90
+
+    # Algorithm versions
+    GREEDY_ALGORITHM_VERSION: str = "greedy-v1"
+    LNS_ALGORITHM_VERSION: str = "lns-v1"
+
 
 settings = Settings()

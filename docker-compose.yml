@@ -1,31 +1,104 @@
+# Production stack: Postgres + Redis + Backend API + ML service + Frontend (nginx).
+# Everything talks over the compose network using service hostnames — no
+# host-specific configuration baked in.
+#
+#   Frontend:  http://localhost:5173   (nginx, proxies /api -> backend)
+#   Backend:   http://localhost:8000   (FastAPI + background workers)
+#   ML:        http://localhost:8001   (prediction service)
+#   Postgres:  localhost:5432 (fleet/fleet)
+#   Redis:     localhost:6379
+
 services:
-  backend:
-    build: ./backend
-    ports:
-      - "8000:8000"
-    env_file:
-      - ./backend/.env
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      ML_SERVICE_URL: http://ml:8001
-      BACKEND_CORS_ORIGINS: http://localhost:5173
+      POSTGRES_DB: fleet_db
+      POSTGRES_USER: fleet
+      POSTGRES_PASSWORD: fleet
+    ports:
+      - "5432:5432"
     volumes:
-      - ./backend:/app
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleet -d fleet_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   ml:
     build: ./ml
+    restart: unless-stopped
     ports:
       - "8001:8001"
-    volumes:
-      - ./ml:/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3); sys.exit(0 if r.status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    # Environment overrides beat env_file values. Service hostnames make the
+    # stack host-independent: identical on any machine running Docker.
+    environment:
+      DATABASE_URL: postgresql+psycopg2://fleet:fleet@postgres:5432/fleet_db
+      REDIS_URL: redis://redis:6379/0
+      ML_SERVICE_URL: http://ml:8001
+      BACKEND_CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+    env_file:
+      - ./backend/.env.local   # supplies OPENWEATHER_API_KEY etc.; DB/Redis/ML URLs above take precedence
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3); sys.exit(0 if r.status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 40s
+      retries: 5
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # Same-origin API calls; nginx proxies /api to the backend container.
+        VITE_API_BASE_URL: /api
+    restart: unless-stopped
     ports:
-      - "5173:5173"
-    environment:
-      VITE_API_BASE_URL: http://localhost:8000/api
+      - "5173:80"
     depends_on:
-      - backend
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

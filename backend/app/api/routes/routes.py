@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.models.optimization_audit import OptimizationRun
 from app.schemas.optimize import OptimizeRouteRequest, OptimizeRouteResponse
 from app.schemas.route import (
     RouteAssignRequest,
@@ -19,6 +20,7 @@ from app.schemas.route import (
 )
 from app.services import route_service
 from app.services.route_optimizer import optimize_route
+from app.workers.lns_worker import create_lns_job, lns_worker
 
 router = APIRouter(prefix="/routes", tags=["routes"])
 
@@ -43,7 +45,17 @@ async def list_routes(skip: int = 0, limit: int = 100, trip_id: str | None = Non
 
 @router.post("/optimize", response_model=OptimizeRouteResponse)
 async def optimize(request: OptimizeRouteRequest):
-    return await optimize_route(request.stops, request.vehicle_capacity_kg)
+    return await optimize_route(
+        request.stops,
+        request.vehicles,
+        request.vehicle_capacity_kg,
+        request.auto_generate_windows,
+        request.start_time,
+        request.vehicle_speed_kph,
+        request.cost_weights,
+        request.solver_time_limit_seconds,
+        request.depot,
+    )
 
 
 @router.post("/assign", response_model=RouteRead, status_code=201)
@@ -114,3 +126,87 @@ def add_stop(route_id: uuid.UUID, stop_in: RouteStopCreate, db: Session = Depend
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
     return route_service.add_stop_to_route(db, route, stop_in)
+
+
+@router.post("/lns/trigger", status_code=202)
+async def trigger_lns():
+    """Manually trigger an LNS optimization run."""
+    job_id = create_lns_job()
+    return {"message": "LNS optimization queued", "job_id": job_id}
+
+
+def _serialize_lns_run(run) -> dict:
+    """JSON-safe serialization of an OptimizationRun for the impact panel."""
+    old_cost = run.old_cost
+    improvement_pct = None
+    if run.improvement is not None and old_cost:
+        improvement_pct = round((run.improvement / old_cost) * 100, 2)
+    return {
+        "run_id": str(run.id),
+        "run_type": run.optimization_type,
+        "status": run.status,
+        "old_cost": run.old_cost,
+        "new_cost": run.new_cost,
+        "improvement": run.improvement,
+        "improvement_pct": improvement_pct,
+        "routes_affected": run.routes_affected,
+        "trips_reinserted": run.trips_reinserted,
+        "execution_time_ms": run.execution_time_ms,
+        "destroy_strategy": run.destroy_strategy,
+        "repair_strategy": run.repair_strategy,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "routes_before": run.routes_before,
+        "routes_after": run.routes_after,
+    }
+
+
+@router.get("/lns/history")
+def lns_history(limit: int = 20, db: Session = Depends(get_db)):
+    """Recent LNS optimization runs with before/after plan snapshots.
+
+    Powers the Live Ops "LNS Impact" panel (Before ⇄ After comparison).
+    """
+    runs = (
+        db.query(OptimizationRun)
+        .filter(OptimizationRun.optimization_type.in_(["TRIGGERED_LNS", "PERIODIC_LNS"]))
+        .order_by(OptimizationRun.created_at.desc())
+        .limit(max(1, min(limit, 100)))
+        .all()
+    )
+    return [_serialize_lns_run(r) for r in runs]
+
+
+@router.get("/lns/history/{run_id}")
+def lns_run_detail(run_id: uuid.UUID, db: Session = Depends(get_db)):
+    """A single LNS run with full before/after snapshots."""
+    run = db.get(OptimizationRun, run_id)
+    if not run or run.optimization_type not in ("TRIGGERED_LNS", "PERIODIC_LNS"):
+        raise HTTPException(status_code=404, detail="LNS run not found")
+    return _serialize_lns_run(run)
+
+
+@router.post("/{route_id}/reoptimize", response_model=RouteRead)
+async def reoptimize_route(route_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Reoptimize a specific route using greedy insertion."""
+    route = route_service.get_route(db, route_id)
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    # Run a single-route greedy reoptimization
+    # This is a simplified version - in production, use LNS with route_destroy
+    from app.optimization.greedy.insertion import greedy_insertion
+    from app.models.trip import Trip
+
+    # Get unassigned trips that could fit this route
+    unassigned_trips = db.query(Trip).filter(
+        Trip.route_id.is_(None),
+        Trip.status == "scheduled",
+    ).limit(10).all()
+
+    for trip in unassigned_trips:
+        result = greedy_insertion.assign_trip(db, trip)
+        if result.success and result.route and result.route.route_id == route.route_id:
+            greedy_insertion.apply_insertion(db, result.insertion_option, trip)
+
+    db.refresh(route)
+    return route

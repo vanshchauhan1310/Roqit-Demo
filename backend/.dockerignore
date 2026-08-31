@@ -1,4 +1,14 @@
 __pycache__
-.venv
+**/__pycache__
 *.pyc
+.venv
+venv
 .env
+.env.local
+.env.backup_tmp
+*.log
+server.log
+server_err.log
+.git
+.pytest_cache
+# Model artifacts MUST ship in the image (service loads them at startup)

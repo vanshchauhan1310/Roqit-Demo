@@ -1,7 +1,14 @@
 import { useState } from "react";
-import { IconCalendar, IconGrid, IconMap, IconSearch, IconTable } from "@/components/common/icons";
+import { IconCalendar, IconGrid, IconMap, IconSearch, IconTable, IconInbox } from "@/components/common/icons";
 
 type ViewMode = "table" | "map" | "columns";
+
+interface TabConfig {
+  key: "incoming" | "assignment" | "routes";
+  label: string;
+  icon: typeof IconInbox;
+  count: number;
+}
 
 interface TripsToolbarProps {
   search: string;
@@ -14,6 +21,9 @@ interface TripsToolbarProps {
   driver: string;
   onDriverChange: (value: string) => void;
   driverOptions: string[];
+  activeTab: "incoming" | "assignment" | "routes";
+  onTabChange: (tab: "incoming" | "assignment" | "routes") => void;
+  tabs: TabConfig[];
 }
 
 export function TripsToolbar({
@@ -27,6 +37,9 @@ export function TripsToolbar({
   driver,
   onDriverChange,
   driverOptions,
+  activeTab,
+  onTabChange,
+  tabs,
 }: TripsToolbarProps) {
   const [view, setView] = useState<ViewMode>("table");
 
@@ -85,7 +98,30 @@ export function TripsToolbar({
         ))}
       </select>
 
+      {/* View tabs: Incoming / Assignment / Routes */}
       <div className="flex items-center gap-1 border border-gray-200 rounded-lg p-1 bg-white">
+        {tabs.map(({ key, label, icon: Icon, count }) => (
+          <button
+            key={key}
+            onClick={() => onTabChange(key)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              activeTab === key
+                ? "bg-teal-50 text-teal-700"
+                : "text-gray-500 hover:text-gray-700 hover:bg-gray-50"
+            }`}
+          >
+            <Icon className="w-4 h-4" />
+            <span>{label}</span>
+            <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium ${
+              activeTab === key ? "bg-teal-100 text-teal-700" : "bg-gray-100 text-gray-500"
+            }`}>
+              {count}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-1 border border-gray-200 rounded-lg p-1 bg-white ml-auto">
         {viewButtons.map(({ key, icon: Icon }) => (
           <button
             key={key}

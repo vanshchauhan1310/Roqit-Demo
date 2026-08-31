@@ -78,3 +78,9 @@ class RouteRead(RouteBase):
     pickup_time: datetime | None = None
     planned_delivery_time: datetime | None = None
     weather_eta: datetime | None = None  # rule-based (OSRM + weather multiplier), not ML — see eta_service.py
+
+    # Fleet/planning fields surfaced to the Live Ops UI (utilization gauges,
+    # cost panel, frozen-segment chips).
+    capacity_kg: float | None = None
+    used_capacity_kg: float | None = None
+    frozen_until_sequence: int | None = None

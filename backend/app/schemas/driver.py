@@ -12,6 +12,7 @@ class DriverBase(BaseModel):
 
 class DriverCreate(DriverBase):
     driver_id: str
+    status: str | None = "active"
 
 
 class DriverRead(DriverBase):
