@@ -45,6 +45,7 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
   const [pickup, setPickup] = useState<PointForm>(initialPoint("pickup"));
   const [drop, setDrop] = useState<PointForm>(initialPoint("drop"));
   const [weightKg, setWeightKg] = useState("");
+  const [fuelPricePerL, setFuelPricePerL] = useState("");
   const queryClient = useQueryClient();
 
   const mapStops = useMemo(() => {
@@ -119,6 +120,7 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
         gps_end_lon: drop.longitude,
         planned_distance_km: roadRoute.distanceKm,
         load_weight_kg: weightKg.trim() ? Number(weightKg) : null,
+        fuel_price_per_l: fuelPricePerL.trim() ? Number(fuelPricePerL) : null,
       });
     },
     onSuccess: () => {
@@ -133,6 +135,7 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
     setPickup(initialPoint("pickup"));
     setDrop(initialPoint("drop"));
     setWeightKg("");
+    setFuelPricePerL("");
     onClose();
   };
 
@@ -188,6 +191,21 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
               <p className="text-xs text-gray-400 mt-1">
                 If entered now, this is reused automatically when this trip is later grouped into a route — no need to
                 enter it again.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Fuel price per liter — optional</label>
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={fuelPricePerL}
+                onChange={(e) => setFuelPricePerL(e.target.value)}
+                placeholder="e.g. 1.85 — leave blank to use system default"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                Used for fuel cost estimation and delay prediction. If left blank, the system default is used.
               </p>
             </div>
           </div>

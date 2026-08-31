@@ -11,7 +11,7 @@ def get_trip_kpi_summary(db: Session) -> TripKpiSummary:
     total_trips, active_trips, delayed_trips, delivered_trips, on_time_delivered, avg_delay, avg_margin = db.query(
         func.count(Trip.trip_id),
         func.sum(case((status == "in-transit", 1), else_=0)),
-        func.sum(case((status == "delayed", 1), (Trip.delay_minutes > 0, 1), else_=0)),
+        func.sum(case((status == "delayed", 1), else_=0)),
         func.sum(case((status == "delivered", 1), else_=0)),
         func.sum(case((status == "delivered", case((Trip.delay_minutes.is_(None), 1), (Trip.delay_minutes <= 0, 1), else_=0)), else_=0)),
         func.avg(case((Trip.delay_minutes > 0, Trip.delay_minutes))),

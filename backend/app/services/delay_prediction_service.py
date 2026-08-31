@@ -93,7 +93,7 @@ def _check_ranges(features: dict) -> None:
     violations = [
         f"{field}={features[field]} outside plausible range [{low}, {high}]"
         for field, (low, high) in NUMERIC_RANGES.items()
-        if not (low <= features[field] <= high)
+        if field in features and features[field] is not None and not (low <= features[field] <= high)
     ]
     if violations:
         raise InvalidFeatureRangeError(

@@ -514,8 +514,8 @@ def _validate_precedence(stops: List[RouteStop], position: Dict[uuid.UUID, int])
 
 
 def assign_route(db: Session, assign_in: RouteAssignRequest) -> Route:
-    if len(assign_in.trip_ids) < 2:
-        raise InsufficientTripsError("A route needs at least 2 trips")
+    if len(assign_in.trip_ids) < 1:
+        raise InsufficientTripsError("A route needs at least 1 trip")
 
     trips = db.query(Trip).filter(Trip.trip_id.in_(assign_in.trip_ids)).all()
     trips_by_id = {t.trip_id: t for t in trips}

@@ -5,5 +5,6 @@ export function useRoutes(tripId?: string) {
   return useQuery({
     queryKey: ["routes", tripId ?? null],
     queryFn: () => fetchRoutes(tripId),
+    staleTime: 30_000, // 30 seconds
   });
 }

@@ -33,7 +33,7 @@ async def _fetch_matrices(
     """One OSRM /table call for every node in the request - stops, plus any hub
     nodes appended after them. Called once per optimize request, never inside the
     solver's search loop."""
-    coords = ";".join(f"{lon},{lat}" for lat, lon in points)
+    coords = ";".join(f"{longitude},{latitude}" for latitude, longitude in points)
     url = f"{settings.OSRM_BASE_URL}/table/v1/driving/{coords}?annotations=duration,distance"
 
     async with httpx.AsyncClient(timeout=15.0) as client:
