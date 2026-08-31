@@ -77,6 +77,7 @@ export function RouteIntelligenceTab({ trip, route: passedRoute }: RouteIntellig
         trip={trip}
         plannedDistanceKm={plannedRoute.distanceKm ?? trip.planned_distance_km}
         plannedDurationHours={plannedRoute.durationHours}
+        hasActualTelemetry={actualTrace.length >= 2}
       />
 
       <WeatherTrafficRow stops={sortedStops} trip={trip} />

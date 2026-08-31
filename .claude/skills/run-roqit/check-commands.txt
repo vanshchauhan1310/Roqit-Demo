@@ -1,0 +1,5 @@
+nav http://localhost:5173
+wait-for text=Trips
+sleep 4000
+console-errors
+screenshot frontend-check

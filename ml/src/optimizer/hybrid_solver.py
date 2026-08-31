@@ -131,7 +131,16 @@ def _insert_job_hybrid(
     pair_model,
     k_spatial: int,
     top_m: int,
+    weights: opt.CostWeights | None = None,
+    baselines: opt.RouteBaselines | None = None,
 ) -> list[int]:
+    """The ML ranking shortlist below (_rank_candidates) is always duration-based - it was
+    trained on plain cost deltas and isn't weight-aware. That's fine for correctness: every
+    candidate it proposes still needs opt.route_is_feasible() to pass before being accepted here,
+    and if `weights` requests a multi-objective route, the exact fallback path (best_pair_insertion
+    below) IS weight-aware (and normalized, via `baselines`), so a job only skips the weighted
+    objective when the duration-based ML shortlist happens to already contain a feasible slot - a
+    speed/quality tradeoff already inherent to the hybrid path, not a correctness gap."""
     loads = opt._load_at_positions(route, placed_jobs) if route else []
 
     for widen_attempt in (1, 3):  # widen the search once if the first shortlist has nothing feasible
@@ -147,7 +156,10 @@ def _insert_job_hybrid(
     # Nothing in even the widened ML shortlist verified feasible - fall back to
     # opt.py's own exact method for this one job, so a route is never returned
     # without having been exactly verified.
-    result = opt.best_pair_insertion(route, job, duration_matrix, vehicle_capacity_kg, placed_jobs)
+    result = opt.best_pair_insertion(
+        route, job, duration_matrix, vehicle_capacity_kg, placed_jobs,
+        distance_matrix=distance_matrix, weights=weights, baselines=baselines,
+    )
     if result is None:
         return route + [job.pickup_idx, job.delivery_idx]
     pickup_pos, delivery_pos, _ = result
@@ -164,6 +176,7 @@ def hybrid_solve(
     top_m: int = 20,
     iterations: int = 200,
     seed: int | None = None,
+    weights: opt.CostWeights | None = None,
 ) -> opt.SolveResult:
     if not jobs:
         raise ValueError("hybrid_solve() requires at least one job")
@@ -173,9 +186,17 @@ def hybrid_solve(
 
     if num_stops < HYBRID_MIN_STOPS or models is None:
         result = opt.solve(
-            jobs, duration_matrix, distance_matrix, vehicle_capacity_kg, iterations=iterations, seed=seed
+            jobs, duration_matrix, distance_matrix, vehicle_capacity_kg,
+            iterations=iterations, seed=seed, weights=weights,
         )
         return result
+
+    active_weights = weights or opt.DEFAULT_COST_WEIGHTS
+    baselines = (
+        opt.compute_baselines(jobs, duration_matrix, distance_matrix, active_weights)
+        if active_weights.is_multi_objective()
+        else None
+    )
 
     _, pair_model = models
     route: list[int] = []
@@ -186,7 +207,7 @@ def hybrid_solve(
         else:
             route = _insert_job_hybrid(
                 route, placed, job, duration_matrix, distance_matrix, coordinates,
-                vehicle_capacity_kg, pair_model, k_spatial, top_m,
+                vehicle_capacity_kg, pair_model, k_spatial, top_m, weights=weights, baselines=baselines,
             )
         placed.append(job)
 

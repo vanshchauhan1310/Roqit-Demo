@@ -1,10 +1,12 @@
 import hashlib
+import asyncio
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.maintenance_event import MaintenanceEvent
 from app.models.realtime_fleet_status import RealtimeFleetStatus
+from app.models.route import RouteStop
 from app.models.trip import Trip
 from app.models.vehicle import Vehicle
 from app.schemas.vehicle_intelligence import (
@@ -73,6 +75,36 @@ async def _predict_fuel_liters(trip: Trip) -> float | None:
         fuel_cost_service.InvalidFeatureRangeError,
     ):
         return None
+
+
+async def _average_route_predicted_fuel_liters(db: Session, trip: Trip) -> float | None:
+    """Average successful ML fuel forecasts for the trip's planned route.
+
+    A route can contain several independently modelled consignments. Showing
+    just the selected row's prediction makes the route-level intelligence card
+    depend on which trip was opened, so aggregate the available predictions.
+    An ungrouped trip naturally falls back to its own prediction.
+    """
+    route_id = (
+        db.query(RouteStop.route_id)
+        .filter(RouteStop.trip_id == trip.trip_id)
+        .order_by(RouteStop.sequence)
+        .first()
+    )
+    if route_id is None:
+        return await _predict_fuel_liters(trip)
+
+    route_trip_ids = [
+        trip_id
+        for (trip_id,) in db.query(RouteStop.trip_id)
+        .filter(RouteStop.route_id == route_id[0], RouteStop.trip_id.isnot(None))
+        .distinct()
+        .all()
+    ]
+    route_trips = db.query(Trip).filter(Trip.trip_id.in_(route_trip_ids)).all()
+    predictions = await asyncio.gather(*(_predict_fuel_liters(route_trip) for route_trip in route_trips))
+    available = [prediction for prediction in predictions if prediction is not None]
+    return sum(available) / len(available) if available else None
 
 
 def _build_fuel_efficiency(
@@ -253,7 +285,7 @@ async def get_vehicle_intelligence(db: Session, trip: Trip) -> VehicleIntelligen
     if vehicle is None:
         return None
 
-    predicted_fuel_liters = await _predict_fuel_liters(trip)
+    predicted_fuel_liters = await _average_route_predicted_fuel_liters(db, trip)
     maintenance_status, events = _build_maintenance_status(db, vehicle)
 
     return VehicleIntelligenceRead(

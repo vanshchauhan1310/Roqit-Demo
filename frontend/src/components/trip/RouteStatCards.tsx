@@ -20,9 +20,10 @@ interface RouteStatCardsProps {
   trip: Trip;
   plannedDistanceKm: number | null;
   plannedDurationHours: number | null;
+  hasActualTelemetry: boolean;
 }
 
-export function RouteStatCards({ trip, plannedDistanceKm, plannedDurationHours }: RouteStatCardsProps) {
+export function RouteStatCards({ trip, plannedDistanceKm, plannedDurationHours, hasActualTelemetry }: RouteStatCardsProps) {
   const expectedDelay = useExpectedDelay(trip.trip_id);
   const delayRisk = useAutoDelayRisk(trip.trip_id);
 
@@ -48,8 +49,8 @@ export function RouteStatCards({ trip, plannedDistanceKm, plannedDurationHours }
 
       <StatCard
         label="Actual Distance"
-        value={trip.actual_distance_km != null ? `${Math.round(trip.actual_distance_km)} km` : "—"}
-        sub="Demo estimate (no telemetry feed)"
+        value={hasActualTelemetry && trip.actual_distance_km != null ? `${Math.round(trip.actual_distance_km)} km` : "—"}
+        sub={hasActualTelemetry ? "GPS telemetry" : "Awaiting GPS telemetry"}
       />
 
       <StatCard label="Planned ETA" value={plannedEta ? formatTime(plannedEta) : "—"} sub={pickupTime ? pickupTime.toLocaleDateString() : undefined} />

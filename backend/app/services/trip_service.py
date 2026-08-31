@@ -13,10 +13,9 @@ from app.models.vehicle import Vehicle
 from app.schemas.trip import TripCreate, TripFilterOptions, TripOutcomeUpdate
 from app.services.weather_client import get_ml_weather_condition
 
-# Demo-only: there's no live telemetry feed wired in yet, so every trip gets a deterministic
-# "actual" outcome derived from its planned values instead of leaving them NULL forever.
-# >1.0 so the demo always shows some real-world overage (detours, traffic) vs the plan.
-DEMO_ACTUAL_DISTANCE_FACTOR = 1.12
+# Actual distance is telemetry-derived. Do not manufacture it from a plan: a
+# route plan can contain multiple trips while an actual trace belongs to the
+# vehicle's completed movement, and mixing the two produces misleading cards.
 DEMO_ACTUAL_DELIVERY_OFFSET_MINUTES = 45
 
 # Hand-coded heuristics for the 3 ML-required fields with no live source and no
@@ -92,9 +91,6 @@ async def create_trip(db: Session, trip_in: TripCreate) -> Trip:
             raise LoadExceedsCapacityError(
                 f"Load weight {load_weight_kg} kg exceeds {vehicle_id}'s capacity of {vehicle.load_capacity_kg} kg"
             )
-
-    if trip_data.get("planned_distance_km") is not None:
-        trip_data["actual_distance_km"] = round(trip_data["planned_distance_km"] * DEMO_ACTUAL_DISTANCE_FACTOR, 1)
 
     if trip_data.get("planned_delivery_time") is not None:
         trip_data["actual_delivery_time"] = trip_data["planned_delivery_time"] + timedelta(
@@ -269,7 +265,7 @@ def complete_trip(db: Session, trip: Trip, outcome_in: TripOutcomeUpdate) -> Tri
     stay empty for this trip."""
     trip.status = outcome_in.status
     trip.delay_minutes = outcome_in.delay_minutes
-    trip.actual_delivery_time = outcome_in.actual_delivery_time or datetime.utcnow()
+    trip.actual_delivery_time = outcome_in.actual_delivery_time or datetime.now(timezone.utc)
     db.add(trip)
     db.commit()
     db.refresh(trip)

@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from datetime import datetime
 
 
 class DriverRosterItem(BaseModel):
@@ -13,6 +14,12 @@ class DriverRosterItem(BaseModel):
     status: str | None = None
     is_on_trip: bool
     license_expiring_soon: bool | None = None
+    # New assignment-aware fields
+    assignment_status: str = "available"  # "available" | "assigned" | "unavailable"
+    current_route_id: str | None = None
+    current_route_name: str | None = None
+    current_route_pickup_time: datetime | None = None
+    current_route_planned_delivery_time: datetime | None = None
 
 
 class VehicleRosterItem(BaseModel):
@@ -25,6 +32,13 @@ class VehicleRosterItem(BaseModel):
     load_capacity_kg: int | None = None
     avg_kmpl_rated: float | None = None
     base_location: str | None = None
+    hub_name: str | None = None
     status: str | None = None
     is_on_trip: bool
     service_due_soon: bool | None = None
+    # New assignment-aware fields
+    assignment_status: str = "available"  # "available" | "assigned" | "unavailable"
+    current_route_id: str | None = None
+    current_route_name: str | None = None
+    current_route_pickup_time: datetime | None = None
+    current_route_planned_delivery_time: datetime | None = None

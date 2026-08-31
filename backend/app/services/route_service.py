@@ -7,10 +7,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.route import Route, RouteStop
+from app.models.driver import Driver
 from app.models.trip import RESOLVED_STATUSES, Trip
 from app.models.vehicle import Vehicle
 from app.models.realtime_fleet_status import RealtimeFleetStatus
-from app.schemas.route import RouteCreate, RouteStopCreate, RouteAssignRequest, TripLoadInput
+from app.schemas.route import FleetPlanCreateRequest, RouteCreate, RouteStopCreate, RouteAssignRequest, TripLoadInput
 from app.services.eta_service import WEATHER_ETA_MULTIPLIERS
 from app.services.geocode_client import geocode_address
 from app.services.osrm_client import get_route_duration_hours
@@ -39,6 +40,14 @@ class StopSetMismatchError(ValueError):
 
 
 class LoadExceedsVehicleCapacityError(ValueError):
+    pass
+
+
+class DriverUnavailableError(ValueError):
+    pass
+
+
+class VehicleUnavailableError(ValueError):
     pass
 
 
@@ -136,6 +145,110 @@ def create_route(db: Session, route_in: RouteCreate) -> Route:
     db.commit()
     db.refresh(route)
     return route
+
+
+def create_fleet_plan_routes(db: Session, plan: FleetPlanCreateRequest) -> list[Route]:
+    """Persist reviewed, unsplit optimizer routes atomically."""
+    if not plan.routes:
+        raise ValueError("A fleet plan needs at least one non-empty route")
+
+    all_trip_ids = [stop.trip_id for route in plan.routes for stop in route.stops]
+    trips = db.query(Trip).filter(Trip.trip_id.in_(set(all_trip_ids))).all()
+    trips_by_id = {trip.trip_id: trip for trip in trips}
+    missing = sorted(set(all_trip_ids) - set(trips_by_id))
+    if missing:
+        raise TripNotFoundError(f"Trip(s) not found: {', '.join(missing)}")
+
+    seen_trip_ids: set[str] = set()
+    persisted: list[Route] = []
+    try:
+        for route_in in plan.routes:
+            if not route_in.stops:
+                raise ValueError(f"Vehicle {route_in.vehicle_id} has no stops")
+            if not route_in.driver_id:
+                raise DriverUnavailableError(
+                    f"DRIVER_UNAVAILABLE: vehicle {route_in.vehicle_id} needs an assigned driver"
+                )
+            by_trip: dict[str, list[str]] = {}
+            for stop in route_in.stops:
+                by_trip.setdefault(stop.trip_id, []).append(stop.stop_type)
+            for trip_id, types in by_trip.items():
+                if trip_id in seen_trip_ids:
+                    raise ValueError(f"Trip {trip_id} appears in more than one vehicle route")
+                if types.count("pickup") != 1 or types.count("delivery") != 1 or len(types) != 2:
+                    raise ValueError(f"Trip {trip_id} must have exactly one pickup and one delivery")
+                if types.index("pickup") > types.index("delivery"):
+                    raise PrecedenceViolationError(trip_id)
+                seen_trip_ids.add(trip_id)
+
+            vehicle = db.get(Vehicle, route_in.vehicle_id)
+            if vehicle is None:
+                raise ValueError(f"Vehicle {route_in.vehicle_id} not found")
+            if (vehicle.status or "").lower() in {"maintenance", "retired", "inactive", "unavailable", "out-of-service"}:
+                raise VehicleUnavailableError(f"VEHICLE_UNAVAILABLE: vehicle {route_in.vehicle_id} is unavailable")
+            if db.query(Route.route_id).filter(
+                Route.vehicle_id == route_in.vehicle_id,
+                func.lower(Route.status).in_(_AUTO_ROUTE_STATUSES),
+            ).first():
+                raise VehicleUnavailableError(
+                    f"VEHICLE_UNAVAILABLE: vehicle {route_in.vehicle_id} already has an active route"
+                )
+            driver = db.get(Driver, route_in.driver_id)
+            if driver is None or (driver.status or "").lower() in {"off-duty", "inactive", "unavailable", "suspended"}:
+                raise DriverUnavailableError(f"DRIVER_UNAVAILABLE: driver {route_in.driver_id} is unavailable")
+            if db.query(Route.route_id).filter(
+                Route.driver_id == route_in.driver_id,
+                func.lower(Route.status).in_(_AUTO_ROUTE_STATUSES),
+            ).first():
+                raise DriverUnavailableError(
+                    f"DRIVER_UNAVAILABLE: driver {route_in.driver_id} already has an active route"
+                )
+            if vehicle.load_capacity_kg is not None:
+                running_load_kg = 0.0
+                peak_load_kg = 0.0
+                for stop_in in route_in.stops:
+                    weight_kg = trips_by_id[stop_in.trip_id].load_weight_kg or 0.0
+                    running_load_kg += weight_kg if stop_in.stop_type == "pickup" else -weight_kg
+                    peak_load_kg = max(peak_load_kg, running_load_kg)
+                if peak_load_kg > vehicle.load_capacity_kg:
+                    raise LoadExceedsVehicleCapacityError(
+                        f"This stop order carries {peak_load_kg} kg at once, exceeding vehicle "
+                        f"{route_in.vehicle_id}'s capacity of {vehicle.load_capacity_kg} kg"
+                    )
+            route = Route(
+                trip_id=next(iter(by_trip)) if len(by_trip) == 1 else None,
+                name=route_in.name or f"Fleet route - {route_in.vehicle_id}",
+                driver_id=route_in.driver_id,
+                vehicle_id=route_in.vehicle_id,
+                pickup_time=plan.pickup_time,
+            )
+            db.add(route)
+            db.flush()
+            for sequence, stop_in in enumerate(route_in.stops, start=1):
+                trip = trips_by_id[stop_in.trip_id]
+                pickup = stop_in.stop_type == "pickup"
+                db.add(RouteStop(
+                    route_id=route.route_id, trip_id=trip.trip_id, sequence=sequence,
+                    stop_type=stop_in.stop_type, address=trip.origin if pickup else trip.destination,
+                    latitude=trip.gps_start_lat if pickup else trip.gps_end_lat,
+                    longitude=trip.gps_start_lon if pickup else trip.gps_end_lon,
+                ))
+            for trip_id in by_trip:
+                trip = trips_by_id[trip_id]
+                trip.driver_id = route_in.driver_id
+                trip.vehicle_id = route_in.vehicle_id
+                trip.pickup_time = plan.pickup_time
+                if vehicle.vehicle_type:
+                    trip.vehicle_type = vehicle.vehicle_type
+                db.add(trip)
+            persisted.append(route)
+        db.commit()
+        for route in persisted:
+            db.refresh(route)
+        return persisted
+    except Exception:
+        db.rollback()
+        raise
 
 
 def get_route(db: Session, route_id: uuid.UUID) -> Route | None:
@@ -250,7 +363,9 @@ async def ensure_stop_weather(db: Session, route: Route) -> bool:
     if not stale_stops:
         return False
 
-    results = await asyncio.gather(*(_refresh_stop_weather(stop, now) for stop in stale_stops))
+    results = []
+    for stop in stale_stops:
+        results.append(await _refresh_stop_weather(stop, now))
     changed = any(results)
     for stop in stale_stops:
         db.add(stop)
@@ -362,6 +477,25 @@ def add_stop_to_route(db: Session, route: Route, stop_in: RouteStopCreate) -> Ro
     return stop
 
 
+def _max_cumulative_load_kg(stops: List[RouteStop], loads_by_trip: Dict[str, float]) -> float:
+    """Walks `stops` in sequence order and returns the highest load the vehicle ever carries at
+    once - +weight at each trip's pickup, -weight at its delivery - not the flat sum of every
+    trip's weight. A sequential pickup->drop->pickup->drop route never carries more than the
+    single heaviest trip in flight at once, even if the trips' weights summed exceed capacity;
+    the flat-sum check this replaces couldn't tell the two cases apart. Mirrors
+    ml/src/optimizer/opt.py::_load_at_positions (see WEIGHT_AWARE_ROUTING.md §8)."""
+    ordered = sorted(stops, key=lambda s: s.sequence)
+    running = 0.0
+    peak = 0.0
+    for stop in ordered:
+        if not stop.trip_id or stop.stop_type not in ("pickup", "delivery"):
+            continue
+        weight = loads_by_trip.get(stop.trip_id, 0.0) or 0.0
+        running += weight if stop.stop_type == "pickup" else -weight
+        peak = max(peak, running)
+    return peak
+
+
 def _validate_precedence(stops: List[RouteStop], position: Dict[uuid.UUID, int]) -> None:
     """Validate that for each trip, pickup comes before delivery in the stop order."""
     by_trip: Dict[str, Dict[str, RouteStop]] = {}
@@ -393,17 +527,31 @@ def assign_route(db: Session, assign_in: RouteAssignRequest) -> Route:
     loads_by_trip = {load.trip_id: load for load in assign_in.loads}
     for trip_id, load in loads_by_trip.items():
         trip = trips_by_id[trip_id]
-        trip.load_weight_kg = load.load_weight_kg
+        # An empty route-level field means "keep the recorded consignment
+        # weight", not "erase it". The trip remains the source of truth
+        # unless a dispatcher deliberately supplies a replacement weight.
+        if load.load_weight_kg is not None:
+            trip.load_weight_kg = load.load_weight_kg
         trip.load_value = load.load_value
 
-    # 2) Check COMBINED weight against the vehicle's capacity.
+    # 2) Capacity is a multi-trip running-load constraint. Validate the
+    # default order this function persists (all pickups, then all deliveries),
+    # rather than a flat sum detached from the actual stop sequence.
     vehicle = db.get(Vehicle, assign_in.vehicle_id)
     if vehicle and vehicle.load_capacity_kg is not None:
-        total_load_kg = sum(t.load_weight_kg or 0 for t in trips)
-        if total_load_kg > vehicle.load_capacity_kg:
+        # Capacity is determined by the cargo concurrently aboard in this
+        # route's persisted default order (all pickups, then all deliveries).
+        # Reordering applies the same running-load rule below.
+        running_load_kg = 0.0
+        peak_load_kg = 0.0
+        for trip_id in assign_in.trip_ids:
+            running_load_kg += trips_by_id[trip_id].load_weight_kg or 0.0
+            peak_load_kg = max(peak_load_kg, running_load_kg)
+        if peak_load_kg > vehicle.load_capacity_kg:
             db.rollback()
             raise LoadExceedsVehicleCapacityError(
-                f"Combined load {total_load_kg} kg exceeds vehicle {assign_in.vehicle_id}'s capacity of {vehicle.load_capacity_kg} kg"
+                f"This stop order carries {peak_load_kg} kg at once, exceeding vehicle "
+                f"{assign_in.vehicle_id}'s capacity of {vehicle.load_capacity_kg} kg"
             )
 
     # 3) Create the Route.
@@ -469,6 +617,25 @@ def reorder_stops(db: Session, route: Route, stop_ids: List[uuid.UUID]) -> Route
 
     for stop in route.stops:
         stop.sequence = position[stop.stop_id] + 1
+
+    # Check the NEW order's actual concurrent load (not a flat sum) against vehicle capacity -
+    # see _max_cumulative_load_kg / WEIGHT_AWARE_ROUTING.md §8. This is the authoritative capacity
+    # gate for the route's real, final stop arrangement: assign_route only rejects a trip that
+    # couldn't fit in ANY order; whether THIS specific order fits is decided here.
+    if route.vehicle_id:
+        vehicle = db.get(Vehicle, route.vehicle_id)
+        if vehicle and vehicle.load_capacity_kg is not None:
+            trip_ids = {stop.trip_id for stop in route.stops if stop.trip_id}
+            trips = db.query(Trip).filter(Trip.trip_id.in_(trip_ids)).all()
+            loads_by_trip = {t.trip_id: t.load_weight_kg or 0.0 for t in trips}
+            peak_kg = _max_cumulative_load_kg(route.stops, loads_by_trip)
+            if peak_kg > vehicle.load_capacity_kg:
+                db.rollback()
+                raise LoadExceedsVehicleCapacityError(
+                    f"This stop order carries {peak_kg} kg at once, exceeding vehicle {route.vehicle_id}'s capacity of {vehicle.load_capacity_kg} kg"
+                )
+
+    for stop in route.stops:
         db.add(stop)
     db.commit()
     return route

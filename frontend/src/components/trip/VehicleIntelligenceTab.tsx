@@ -186,7 +186,7 @@ function FuelEfficiencyCard({ fuelEfficiency }: { fuelEfficiency: FuelEfficiency
           colorClass="bg-red-500"
           isEstimate={this_trip_fuel_l_is_estimate}
         />
-        <EfficiencyBar label="Predicted (ML)" value={predicted_fuel_l} max={max} colorClass="bg-violet-500" />
+        <EfficiencyBar label="Predicted (ML route avg)" value={predicted_fuel_l} max={max} colorClass="bg-violet-500" />
         <EfficiencyBar label="Rated" value={rated_fuel_l} max={max} colorClass="bg-teal-600" />
         <EfficiencyBar label="Fleet avg (same vehicle type)" value={fleet_avg_fuel_l} max={max} colorClass="bg-teal-300" />
       </div>

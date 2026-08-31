@@ -37,7 +37,7 @@ interface TripLoad {
   value: string;
 }
 
-const STEP_LABELS = ["Trips", "Driver", "Vehicle", "Load", "Review"];
+const STEP_LABELS = ["Driver", "Vehicle", "Filter & Validate", "Trips", "Review"];
 const LAST_STEP = STEP_LABELS.length - 1;
 
 function buildDefaultStops(tripIds: string[]): StopPreview[] {
@@ -64,6 +64,53 @@ function precedenceViolation(stops: StopPreview[]): boolean {
 function sameOrder(a: StopPreview[], b: StopPreview[]): boolean {
   if (a.length !== b.length) return false;
   return a.every((stop, i) => stop.tripId === b[i].tripId && stop.stopType === b[i].stopType);
+}
+
+// Peak concurrent load along the ACTUAL chosen stop order - not a flat sum of every trip's
+// weight. A sequential pickup->drop->pickup->drop order never carries more than its single
+// heaviest trip at once, even if the trips' weights summed would exceed capacity; a flat-sum
+// check can't tell the two cases apart and wrongly blocks a genuinely feasible route. Mirrors
+// backend route_service.py::_max_cumulative_load_kg / ml/src/optimizer/opt.py::_load_at_positions
+// (see WEIGHT_AWARE_ROUTING.md §8).
+function peakConcurrentLoadKg(stops: StopPreview[], loads: Record<string, TripLoad>, tripsById: Map<string, Trip>): number {
+  let running = 0;
+  let peak = 0;
+  for (const stop of stops) {
+    const entered = loads[stop.tripId]?.weightKg;
+    const weight = entered ? Number(entered) : (tripsById.get(stop.tripId)?.load_weight_kg ?? 0);
+    running += stop.stopType === "pickup" ? weight : -weight;
+    peak = Math.max(peak, running);
+  }
+  return peak;
+}
+
+type IneligibilityReason = "already-assigned" | "exceeds-vehicle-capacity";
+
+// Layered ON TOP of the existing "already assigned" rule (unassignedTripIds - unchanged, still
+// the sole source of truth for that check) - adds a new, additive vehicle/load eligibility check.
+// This does NOT touch pickup/delivery precedence at all: precedence is a property of the chosen
+// STOP ORDER, validated exactly as before (moveStop's precedenceViolation, the backend's
+// _validate_precedence on reorder, and opt.py's route_is_feasible in the solver) - none of that
+// logic is duplicated or altered here. This only pre-filters which trips are selectable, the same
+// way "a trip already on a route can't be selected" always has.
+function tripIneligibilityReason(
+  trip: Trip,
+  unassignedTripIds: Set<string>,
+  selectedTripIds: string[],
+  vehicleCapacityKg: number | null,
+  loads: Record<string, TripLoad>,
+): IneligibilityReason | null {
+  const alreadySelected = selectedTripIds.includes(trip.trip_id);
+  if (!unassignedTripIds.has(trip.trip_id) && !alreadySelected) return "already-assigned";
+  if (vehicleCapacityKg != null) {
+    const entered = loads[trip.trip_id]?.weightKg;
+    const weight = entered ? Number(entered) : trip.load_weight_kg;
+    // Mirrors the backend's own "could this trip ever fit, in any stop order" pre-check
+    // (route_service.py's assign_route: heaviest single trip vs vehicle.load_capacity_kg) -
+    // not a new rule, the same existence check, just evaluated per-trip before selection here.
+    if (weight != null && weight > vehicleCapacityKg) return "exceeds-vehicle-capacity";
+  }
+  return null;
 }
 
 export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
@@ -145,7 +192,15 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
           load_weight_kg: enteredWeight ? Number(enteredWeight) : (trip?.load_weight_kg ?? null),
         };
       });
-      return optimizeRouteOrder(stopInputs, selectedVehicle?.load_capacity_kg ?? null);
+      const fuelPricePerL = selectedTripIds
+        .map((id) => tripsById.get(id)?.fuel_price_per_l)
+        .find((v): v is number => v != null) ?? null;
+      return optimizeRouteOrder(
+        stopInputs,
+        selectedVehicle?.load_capacity_kg ?? null,
+        selectedVehicle?.avg_kmpl_rated ?? null,
+        fuelPricePerL,
+      );
     },
     onSuccess: (result) => {
       const byKey = new Map(stops.map((s) => [`${s.tripId}:${s.stopType}`, s]));
@@ -158,12 +213,12 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
     (sum, tripId) => sum + (Number(loads[tripId]?.weightKg) || 0),
     0,
   );
+  const peakLoadKg = useMemo(
+    () => peakConcurrentLoadKg(stops, loads, tripsById),
+    [stops, loads, tripsById],
+  );
   const exceedsCapacity =
-    selectedVehicle?.load_capacity_kg != null && totalLoadKg > selectedVehicle.load_capacity_kg;
-
-  const allWeightsEntered =
-    selectedTripIds.length > 0 &&
-    selectedTripIds.every((tripId) => (loads[tripId]?.weightKg ?? "").trim() !== "");
+    selectedVehicle?.load_capacity_kg != null && peakLoadKg > selectedVehicle.load_capacity_kg;
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -214,12 +269,29 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
   };
 
   const toggleTrip = (tripId: string) => {
-    if (!unassignedTripIds.has(tripId) && !selectedTripIds.includes(tripId)) return; // already on a route
-    setSelectedTripIds((prev) => {
-      const next = prev.includes(tripId) ? prev.filter((id) => id !== tripId) : [...prev, tripId];
-      setStops(buildDefaultStops(next));
-      return next;
-    });
+    const wasSelected = selectedTripIds.includes(tripId);
+    if (!wasSelected) {
+      const trip = tripsById.get(tripId);
+      const reason = trip
+        ? tripIneligibilityReason(trip, unassignedTripIds, selectedTripIds, selectedVehicle?.load_capacity_kg ?? null, loads)
+        : "already-assigned";
+      if (reason) return; // not eligible - already on a route, or alone exceeds this vehicle's capacity
+    }
+    const next = wasSelected ? selectedTripIds.filter((id) => id !== tripId) : [...selectedTripIds, tripId];
+    setSelectedTripIds(next);
+    setStops(buildDefaultStops(next));
+
+    if (!wasSelected) {
+      // Reuse the weight already captured at trip creation, if any - don't force
+      // re-entering something already known (see WEIGHT_AWARE_ROUTING.md).
+      const existingWeight = tripsById.get(tripId)?.load_weight_kg;
+      if (existingWeight != null) {
+        setLoads((prev) => ({
+          ...prev,
+          [tripId]: { weightKg: prev[tripId]?.weightKg ?? String(existingWeight), value: prev[tripId]?.value ?? "" },
+        }));
+      }
+    }
   };
 
   const moveStop = (index: number, direction: -1 | 1) => {
@@ -235,10 +307,10 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
     setLoads((prev) => ({ ...prev, [tripId]: { ...(prev[tripId] ?? { weightKg: "", value: "" }), ...patch } }));
 
   const canContinue = (): boolean => {
-    if (step === 0) return selectedTripIds.length >= 2;
-    if (step === 1) return Boolean(selectedDriver);
-    if (step === 2) return Boolean(selectedVehicle);
-    if (step === 3) return allWeightsEntered && !exceedsCapacity;
+    if (step === 0) return Boolean(selectedDriver);
+    if (step === 1) return Boolean(selectedVehicle);
+    if (step === 2) return true; // filter/validate is informational, never blocks
+    if (step === 3) return selectedTripIds.length >= 2 && !exceedsCapacity;
     return pickupDateTime.trim() !== "";
   };
 
@@ -276,22 +348,6 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
         <div className="flex-1 overflow-y-auto px-6 py-5 grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div>
             {step === 0 && (
-              <TripsStep
-                trips={trips ?? []}
-                isLoading={tripsLoading}
-                selectedTripIds={selectedTripIds}
-                unassignedTripIds={unassignedTripIds}
-                onToggleTrip={toggleTrip}
-                stops={stops}
-                onMoveStop={moveStop}
-                onOptimize={() => optimizeMutation.mutate()}
-                isOptimizing={optimizeMutation.isPending}
-                optimizeDisabled={stopsMissingCoordinates || stops.length < 4}
-                solverUsed={optimizeMutation.data?.solver_used ?? null}
-                optimizeErrorMessage={optimizeErrorMessage}
-              />
-            )}
-            {step === 1 && (
               <DriverStep
                 drivers={drivers ?? []}
                 isLoading={driversLoading}
@@ -299,7 +355,7 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
                 onSelectDriver={setDriverId}
               />
             )}
-            {step === 2 && (
+            {step === 1 && (
               <VehicleStep
                 vehicles={vehicles ?? []}
                 isLoading={vehiclesLoading}
@@ -307,14 +363,36 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
                 onSelectVehicle={setVehicleId}
               />
             )}
-            {step === 3 && (
-              <LoadStep
-                trips={selectedTripIds.map((id) => tripsById.get(id)).filter((t): t is Trip => Boolean(t))}
+            {step === 2 && (
+              <FilterValidateStep
+                trips={trips ?? []}
+                isLoading={tripsLoading}
+                unassignedTripIds={unassignedTripIds}
+                selectedTripIds={selectedTripIds}
+                vehicleCapacityKg={selectedVehicle?.load_capacity_kg ?? null}
                 loads={loads}
                 onUpdateLoad={updateLoad}
+              />
+            )}
+            {step === 3 && (
+              <TripsStep
+                trips={trips ?? []}
+                isLoading={tripsLoading}
+                selectedTripIds={selectedTripIds}
+                unassignedTripIds={unassignedTripIds}
                 vehicleCapacityKg={selectedVehicle?.load_capacity_kg ?? null}
+                loads={loads}
+                onToggleTrip={toggleTrip}
+                stops={stops}
+                onMoveStop={moveStop}
                 totalLoadKg={totalLoadKg}
+                peakLoadKg={peakLoadKg}
                 exceedsCapacity={exceedsCapacity}
+                onOptimize={() => optimizeMutation.mutate()}
+                isOptimizing={optimizeMutation.isPending}
+                optimizeDisabled={stopsMissingCoordinates || stops.length < 4}
+                solverUsed={optimizeMutation.data?.solver_used ?? null}
+                optimizeErrorMessage={optimizeErrorMessage}
               />
             )}
             {step === 4 && (
@@ -436,9 +514,14 @@ interface TripsStepProps {
   isLoading: boolean;
   selectedTripIds: string[];
   unassignedTripIds: Set<string>;
+  vehicleCapacityKg: number | null;
+  loads: Record<string, TripLoad>;
   onToggleTrip: (tripId: string) => void;
   stops: StopPreview[];
   onMoveStop: (index: number, direction: -1 | 1) => void;
+  totalLoadKg: number;
+  peakLoadKg: number;
+  exceedsCapacity: boolean;
   onOptimize: () => void;
   isOptimizing: boolean;
   optimizeDisabled: boolean;
@@ -451,9 +534,14 @@ function TripsStep({
   isLoading,
   selectedTripIds,
   unassignedTripIds,
+  vehicleCapacityKg,
+  loads,
   onToggleTrip,
   stops,
   onMoveStop,
+  totalLoadKg,
+  peakLoadKg,
+  exceedsCapacity,
   onOptimize,
   isOptimizing,
   optimizeDisabled,
@@ -464,6 +552,7 @@ function TripsStep({
     <div className="space-y-5">
       <div>
         <label className="block text-sm font-semibold text-gray-900 mb-2">Select trips to group (min 2)</label>
+        <p className="text-xs text-gray-400 mb-2">Only trips that passed Filter &amp; Validate are selectable.</p>
         {isLoading && <p className="text-sm text-gray-400">Loading trips…</p>}
         {!isLoading && trips.length === 0 && (
           <p className="text-sm text-gray-400">No trips available — create a trip first.</p>
@@ -471,17 +560,20 @@ function TripsStep({
         <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
           {trips.map((trip) => {
             const selected = selectedTripIds.includes(trip.trip_id);
-            const alreadyRouted = !unassignedTripIds.has(trip.trip_id) && !selected;
+            const reason = selected
+              ? null
+              : tripIneligibilityReason(trip, unassignedTripIds, selectedTripIds, vehicleCapacityKg, loads);
+            const ineligible = reason != null;
             return (
               <button
                 key={trip.trip_id}
                 type="button"
                 onClick={() => onToggleTrip(trip.trip_id)}
-                disabled={alreadyRouted}
+                disabled={ineligible}
                 className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-lg border text-left transition-colors ${
                   selected
                     ? "border-teal-500 bg-teal-50"
-                    : alreadyRouted
+                    : ineligible
                       ? "border-gray-100 bg-gray-50 opacity-60 cursor-not-allowed"
                       : "border-gray-200 hover:bg-gray-50"
                 }`}
@@ -496,9 +588,14 @@ function TripsStep({
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {alreadyRouted && (
+                  {reason === "already-assigned" && (
                     <span className="px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-medium whitespace-nowrap">
                       Assigned
+                    </span>
+                  )}
+                  {reason === "exceeds-vehicle-capacity" && (
+                    <span className="px-2.5 py-1 rounded-full bg-red-50 text-red-700 text-xs font-medium whitespace-nowrap">
+                      Exceeds capacity
                     </span>
                   )}
                   <span
@@ -517,27 +614,13 @@ function TripsStep({
 
       {stops.length >= 2 && (
         <div>
-          <div className="flex items-center justify-between gap-3 mb-2">
-            <label className="block text-sm font-semibold text-gray-900">
-              Stop sequence <span className="text-gray-400 font-normal">(reorder with arrows — a delivery can never precede its own pickup)</span>
-            </label>
-            <button
-              type="button"
-              onClick={onOptimize}
-              disabled={optimizeDisabled || isOptimizing}
-              title={optimizeDisabled ? "Locate every selected trip's pickup/drop first to enable optimization" : undefined}
-              className="shrink-0 px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {isOptimizing ? "Optimizing…" : "Optimize stop order"}
-            </button>
-          </div>
-          {solverUsed && (
-            <p className="text-xs text-gray-400 mb-2">
-              Optimized via the {solverUsed === "hybrid" ? "hybrid ML+DSA" : "exact"} solver — uses whatever
-              load/vehicle data is known so far; re-run after selecting a vehicle for weight-aware ordering.
-            </p>
-          )}
-          {optimizeErrorMessage && <p className="text-xs text-red-600 mb-2">{optimizeErrorMessage}</p>}
+          <label className="block text-sm font-semibold text-gray-900 mb-2">
+            Stop sequence <span className="text-gray-400 font-normal">(reorder with arrows — a delivery can never precede its own pickup)</span>
+          </label>
+          <p className="text-xs text-gray-400 mb-2">
+            Reorder manually with the arrows, or use Optimize below — it weighs distance, travel time, fuel cost and
+            cargo weight together, using the driver/vehicle/load already set.
+          </p>
           <div className="space-y-2">
             {stops.map((stop, index) => {
               const trip = trips.find((t) => t.trip_id === stop.tripId);
@@ -577,8 +660,181 @@ function TripsStep({
               );
             })}
           </div>
+
+          <div
+            className={`mt-3 px-4 py-3 rounded-lg border text-sm ${
+              exceedsCapacity ? "bg-red-50 border-red-100 text-red-700" : "bg-gray-50 border-gray-200 text-gray-600"
+            }`}
+          >
+            {vehicleCapacityKg != null ? (
+              exceedsCapacity ? (
+                <>
+                  This stop order carries <strong>{peakLoadKg.toLocaleString()} kg</strong> at once, exceeding this
+                  vehicle's {vehicleCapacityKg.toLocaleString()} kg capacity — reduce a load, pick a different
+                  vehicle, or optimize the stop order below so fewer pickups overlap before their deliveries.
+                </>
+              ) : (
+                <>
+                  Peak load carried at once: <strong>{peakLoadKg.toLocaleString()} kg</strong> of{" "}
+                  {vehicleCapacityKg.toLocaleString()} kg vehicle capacity
+                  {peakLoadKg > 0 ? ` (${Math.round((peakLoadKg / vehicleCapacityKg) * 100)}%)` : ""}
+                  {totalLoadKg !== peakLoadKg ? ` — ${totalLoadKg.toLocaleString()} kg total across all trips` : ""}
+                </>
+              )
+            ) : (
+              <>Combined load: {totalLoadKg.toLocaleString()} kg total across all trips</>
+            )}
+          </div>
+
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <p className="text-xs text-gray-400">
+              {solverUsed
+                ? `Optimized via the ${solverUsed === "hybrid" ? "hybrid ML+DSA" : "exact"} solver.`
+                : "Reorders this route's stops — see the result on the map preview."}
+            </p>
+            <button
+              type="button"
+              onClick={onOptimize}
+              disabled={optimizeDisabled || isOptimizing}
+              title={optimizeDisabled ? "Locate every selected trip's pickup/drop first to enable optimization" : undefined}
+              className="shrink-0 px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {isOptimizing ? "Optimizing…" : "Optimize stop order"}
+            </button>
+          </div>
+          {optimizeErrorMessage && <p className="mt-2 text-xs text-red-600">{optimizeErrorMessage}</p>}
         </div>
       )}
+    </div>
+  );
+}
+
+interface FilterValidateStepProps {
+  trips: Trip[];
+  isLoading: boolean;
+  unassignedTripIds: Set<string>;
+  selectedTripIds: string[];
+  vehicleCapacityKg: number | null;
+  loads: Record<string, TripLoad>;
+  onUpdateLoad: (tripId: string, patch: Partial<TripLoad>) => void;
+}
+
+function FilterValidateStep({
+  trips,
+  isLoading,
+  unassignedTripIds,
+  selectedTripIds,
+  vehicleCapacityKg,
+  loads,
+  onUpdateLoad,
+}: FilterValidateStepProps) {
+  const evaluated = trips.map((trip) => ({
+    trip,
+    reason: tripIneligibilityReason(trip, unassignedTripIds, selectedTripIds, vehicleCapacityKg, loads),
+  }));
+  const eligibleCount = evaluated.filter((e) => e.reason == null).length;
+  const alreadyAssignedCount = evaluated.filter((e) => e.reason === "already-assigned").length;
+  const overCapacityCount = evaluated.filter((e) => e.reason === "exceeds-vehicle-capacity").length;
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="block text-sm font-semibold text-gray-900 mb-1">Filter &amp; validate trips</label>
+        <p className="text-xs text-gray-400 mb-3">
+          Existing pickup/drop rules (a trip already on a route can't be reused) plus the driver/vehicle just chosen
+          determine which trips are eligible below. Weight is optional — enter it here if known, or leave blank and
+          it won't block anything; a weight already captured at trip creation is reused automatically. Stop-order
+          precedence (delivery never before its own pickup) is unaffected by this step — it's still enforced exactly
+          as before, later, on the actual chosen stop sequence.
+        </p>
+        <div className="flex flex-wrap gap-2 mb-3">
+          <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-medium">
+            {eligibleCount} eligible
+          </span>
+          {alreadyAssignedCount > 0 && (
+            <span className="px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-medium">
+              {alreadyAssignedCount} already assigned
+            </span>
+          )}
+          {overCapacityCount > 0 && (
+            <span className="px-2.5 py-1 rounded-full bg-red-50 text-red-700 text-xs font-medium">
+              {overCapacityCount} exceed vehicle capacity
+            </span>
+          )}
+        </div>
+      </div>
+
+      {isLoading && <p className="text-sm text-gray-400">Loading trips…</p>}
+      {!isLoading && trips.length === 0 && (
+        <p className="text-sm text-gray-400">No trips available — create a trip first.</p>
+      )}
+
+      <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+        {evaluated.map(({ trip, reason }) => (
+          <div
+            key={trip.trip_id}
+            className={`border rounded-xl p-4 ${reason ? "border-gray-100 bg-gray-50 opacity-75" : "border-gray-200"}`}
+          >
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div className="text-sm font-medium text-gray-900">
+                {trip.trip_id} · {trip.origin ?? "—"} → {trip.destination ?? "—"}
+              </div>
+              {reason === "already-assigned" && (
+                <span className="px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-medium whitespace-nowrap shrink-0">
+                  Already assigned
+                </span>
+              )}
+              {reason === "exceeds-vehicle-capacity" && (
+                <span className="px-2.5 py-1 rounded-full bg-red-50 text-red-700 text-xs font-medium whitespace-nowrap shrink-0">
+                  Exceeds vehicle capacity
+                </span>
+              )}
+              {reason == null && (
+                <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-medium whitespace-nowrap shrink-0">
+                  Eligible
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">
+                  Weight (kg)
+                  {trip.load_weight_kg != null && (
+                    <span className="ml-1.5 text-xs text-gray-400">
+                      on file: {trip.load_weight_kg.toLocaleString()} kg
+                    </span>
+                  )}
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  disabled={reason === "already-assigned"}
+                  // Show the stored weight rather than an empty box: `loads` is only
+                  // populated once a trip is SELECTED (toggleTrip), which happens a
+                  // step later, so binding to it alone renders every field blank here
+                  // and reads as "no weight recorded" even when one exists.
+                  value={loads[trip.trip_id]?.weightKg ?? (trip.load_weight_kg != null ? String(trip.load_weight_kg) : "")}
+                  onChange={(e) => onUpdateLoad(trip.trip_id, { weightKg: e.target.value })}
+                  placeholder={trip.load_weight_kg == null ? "Not recorded — optional" : "e.g. 8000"}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Value (₹)</label>
+                <input
+                  type="number"
+                  min={0}
+                  disabled={reason === "already-assigned"}
+                  value={loads[trip.trip_id]?.value ?? ""}
+                  onChange={(e) => onUpdateLoad(trip.trip_id, { value: e.target.value })}
+                  placeholder="e.g. 250000"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm disabled:opacity-50"
+                />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -727,83 +983,6 @@ function VehicleStep({ vehicles, isLoading, selectedVehicleId, onSelectVehicle }
             </button>
           );
         })}
-      </div>
-    </div>
-  );
-}
-
-interface LoadStepProps {
-  trips: Trip[];
-  loads: Record<string, TripLoad>;
-  onUpdateLoad: (tripId: string, patch: Partial<TripLoad>) => void;
-  vehicleCapacityKg: number | null;
-  totalLoadKg: number;
-  exceedsCapacity: boolean;
-}
-
-function LoadStep({ trips, loads, onUpdateLoad, vehicleCapacityKg, totalLoadKg, exceedsCapacity }: LoadStepProps) {
-  return (
-    <div className="space-y-4">
-      <div>
-        <label className="block text-sm font-semibold text-gray-900 mb-1">Load per trip</label>
-        <p className="text-xs text-gray-400 mb-3">Each trip is separately-valued cargo even though they travel together.</p>
-      </div>
-
-      <div className="space-y-3">
-        {trips.map((trip) => (
-          <div key={trip.trip_id} className="border border-gray-200 rounded-xl p-4">
-            <div className="text-sm font-medium text-gray-900 mb-3">
-              {trip.trip_id} · {trip.origin ?? "—"} → {trip.destination ?? "—"}
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm text-gray-600 mb-1">Weight (kg)</label>
-                <input
-                  type="number"
-                  min={0}
-                  value={loads[trip.trip_id]?.weightKg ?? ""}
-                  onChange={(e) => onUpdateLoad(trip.trip_id, { weightKg: e.target.value })}
-                  placeholder="e.g. 8000"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-gray-600 mb-1">Value (₹)</label>
-                <input
-                  type="number"
-                  min={0}
-                  value={loads[trip.trip_id]?.value ?? ""}
-                  onChange={(e) => onUpdateLoad(trip.trip_id, { value: e.target.value })}
-                  placeholder="e.g. 250000"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-                />
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div
-        className={`px-4 py-3 rounded-lg border text-sm ${
-          exceedsCapacity ? "bg-red-50 border-red-100 text-red-700" : "bg-gray-50 border-gray-200 text-gray-600"
-        }`}
-      >
-        {vehicleCapacityKg != null ? (
-          exceedsCapacity ? (
-            <>
-              Combined load <strong>{totalLoadKg.toLocaleString()} kg</strong> exceeds this vehicle's{" "}
-              {vehicleCapacityKg.toLocaleString()} kg capacity — reduce a load or pick a different vehicle.
-            </>
-          ) : (
-            <>
-              Combined load <strong>{totalLoadKg.toLocaleString()} kg</strong> of{" "}
-              {vehicleCapacityKg.toLocaleString()} kg vehicle capacity
-              {totalLoadKg > 0 ? ` (${Math.round((totalLoadKg / vehicleCapacityKg) * 100)}%)` : ""}
-            </>
-          )
-        ) : (
-          <>Combined load: {totalLoadKg.toLocaleString()} kg</>
-        )}
       </div>
     </div>
   );

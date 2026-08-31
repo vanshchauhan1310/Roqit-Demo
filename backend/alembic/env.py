@@ -8,7 +8,13 @@ from app.db.base import Base
 import app.models  # noqa: F401 - registers all models onto Base.metadata
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# set_main_option writes through configparser, which reads "%" as the start of an
+# interpolation token. A DATABASE_URL whose password contains percent-encoded
+# characters (e.g. %40 for "@") therefore raises
+# "ValueError: invalid interpolation syntax" and every alembic command fails
+# before it can connect. Doubling the percent signs escapes them for configparser;
+# the value read back out is the original URL.
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

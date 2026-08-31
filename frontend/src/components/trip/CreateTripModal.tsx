@@ -44,6 +44,7 @@ function pointAddress(point: PointForm): string {
 export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
   const [pickup, setPickup] = useState<PointForm>(initialPoint("pickup"));
   const [drop, setDrop] = useState<PointForm>(initialPoint("drop"));
+  const [weightKg, setWeightKg] = useState("");
   const queryClient = useQueryClient();
 
   const mapStops = useMemo(() => {
@@ -117,6 +118,7 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
         gps_end_lat: drop.latitude,
         gps_end_lon: drop.longitude,
         planned_distance_km: roadRoute.distanceKm,
+        load_weight_kg: weightKg.trim() ? Number(weightKg) : null,
       });
     },
     onSuccess: () => {
@@ -130,6 +132,7 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
   const resetAndClose = () => {
     setPickup(initialPoint("pickup"));
     setDrop(initialPoint("drop"));
+    setWeightKg("");
     onClose();
   };
 
@@ -171,6 +174,22 @@ export function CreateTripModal({ open, onClose }: CreateTripModalProps) {
               label="Drop"
               iconColor="bg-emerald-100 text-emerald-700"
             />
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Load weight (kg) — optional</label>
+              <input
+                type="number"
+                min={0}
+                value={weightKg}
+                onChange={(e) => setWeightKg(e.target.value)}
+                placeholder="e.g. 8000 — leave blank if not known yet"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                If entered now, this is reused automatically when this trip is later grouped into a route — no need to
+                enter it again.
+              </p>
+            </div>
           </div>
 
           <div className="flex flex-col gap-3">

@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from src.models import delay_risk, eta_prediction, expected_delay, fuel_consumption, trip_cost
-from src.optimizer import opt
+from src.optimizer import fleet, opt
 from src.optimizer.hybrid_solver import hybrid_solve
 
 app = FastAPI(title="Fleet Optimization ML Service")
@@ -93,6 +93,9 @@ class OptimizeJob(BaseModel):
     pickup_stop_index: int
     delivery_stop_index: int
     load_weight_kg: float = 0.0
+    parent_trip_id: str | None = None
+    original_load_weight_kg: float | None = None
+    allowed_vehicle_ids: list[str] | None = None
 
 
 class PickupDeliveryOptimizeRequest(BaseModel):
@@ -101,6 +104,17 @@ class PickupDeliveryOptimizeRequest(BaseModel):
     distance_matrix: list[list[float]]
     coordinates: list[list[float]]  # [[lat, lon], ...], same index space as the matrices
     vehicle_capacity_kg: float | None = None
+    # Cost-model weights (see src/optimizer/opt.py::CostWeights and WEIGHT_AWARE_ROUTING.md).
+    # Defaults reduce the objective to plain duration - i.e. today's behavior - so callers that
+    # don't send these are unaffected. When any of beta/gamma/delta is non-zero, terms are
+    # baseline-normalized before being combined (see opt.compute_baselines) so these weights are
+    # genuine relative-priority percentages, not a mix of raw seconds/meters/currency/tonne-km.
+    alpha: float = 1.0  # duration
+    beta: float = 0.0  # fuel cost - only consulted when non-zero AND avg_kmpl_rated/fuel_price_per_l given
+    gamma: float = 0.0  # ton-km (load x distance)
+    delta: float = 0.0  # distance
+    avg_kmpl_rated: float | None = None
+    fuel_price_per_l: float | None = None
 
 
 class PickupDeliveryOptimizeResponse(BaseModel):
@@ -109,6 +123,77 @@ class PickupDeliveryOptimizeResponse(BaseModel):
     total_distance_meters: float
     solver_used: Literal["exact", "hybrid"]
     feasible: bool
+
+
+# ---------------------------------------------------------------------------
+# Multi-vehicle fleet optimization (see src/optimizer/fleet.py)
+# ---------------------------------------------------------------------------
+
+# Hard cap so a pathological request can't pin the solver - insertion search is
+# O(vehicles x stops^2) per job, so cost grows fast. Well above any realistic
+# dispatch batch for this product.
+MAX_FLEET_JOBS = 60
+
+
+class FleetVehicleInput(BaseModel):
+    vehicle_id: str
+    capacity_kg: float | None = None  # None => unconstrained
+    avg_kmpl_rated: float | None = None
+    fuel_price_per_l: float | None = None
+    fixed_cost: float = 0.0
+    driver_id: str | None = None
+    # Optional depot/hub node indices into the same matrices the jobs index into.
+    # Omit for an open route (today's behavior) - see MULTI_VEHICLE_ROUTING.md.
+    start_idx: int | None = None
+    end_idx: int | None = None
+    # Per-vehicle rates; override the request-level fallbacks below.
+    cost_per_km: float | None = None
+    driver_cost_per_hour: float | None = None
+    max_route_duration_seconds: float = 12 * 60 * 60
+
+
+class FleetOptimizeRequest(BaseModel):
+    jobs: list[OptimizeJob]
+    vehicles: list[FleetVehicleInput]
+    duration_matrix: list[list[float]]
+    distance_matrix: list[list[float]]
+    driver_cost_per_hour: float | None = None
+    operating_cost_per_km: float | None = None
+    iterations: int = 150
+    seed: int | None = None
+
+
+class FleetRouteMetrics(BaseModel):
+    distance_meters: float
+    duration_seconds: float
+    fuel_liters: float
+    fuel_cost: float
+    driver_cost: float
+    operating_cost: float
+    fixed_cost: float
+    peak_load_kg: float
+    total_cost: float
+    cost_is_monetary: bool
+
+
+class FleetVehicleRoute(BaseModel):
+    vehicle_id: str
+    driver_id: str | None
+    order: list[int]  # job stops in visiting order (depot excluded)
+    full_sequence: list[int]  # including depot start/end when configured
+    trip_ids: list[str]
+    metrics: FleetRouteMetrics
+
+
+class FleetOptimizeResponse(BaseModel):
+    status: Literal["SUCCESS", "PARTIAL", "NO_FEASIBLE_SOLUTION"]
+    routes: list[FleetVehicleRoute]
+    unassigned_trip_ids: list[str]
+    totals: FleetRouteMetrics
+    vehicles_used: int
+    explanation: list[str]
+    # Diagnostic information for unassigned trips
+    unassigned_diagnostics: list[dict] = []
 
 
 @app.get("/health")
@@ -180,9 +265,20 @@ def optimize_pickup_delivery(request: PickupDeliveryOptimizeRequest):
             pickup_idx=j.pickup_stop_index,
             delivery_idx=j.delivery_stop_index,
             load_weight_kg=j.load_weight_kg or 0.0,
+            parent_trip_id=j.parent_trip_id,
+            original_load_weight_kg=j.original_load_weight_kg,
+            allowed_vehicle_ids=frozenset(j.allowed_vehicle_ids) if j.allowed_vehicle_ids else None,
         )
         for j in request.jobs
     ]
+    weights = opt.CostWeights(
+        alpha=request.alpha,
+        beta=request.beta,
+        gamma=request.gamma,
+        delta=request.delta,
+        avg_kmpl_rated=request.avg_kmpl_rated,
+        fuel_price_per_l=request.fuel_price_per_l,
+    )
     try:
         result = hybrid_solve(
             jobs=jobs,
@@ -190,6 +286,7 @@ def optimize_pickup_delivery(request: PickupDeliveryOptimizeRequest):
             distance_matrix=request.distance_matrix,
             coordinates=[tuple(c) for c in request.coordinates],
             vehicle_capacity_kg=request.vehicle_capacity_kg,
+            weights=weights,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -200,4 +297,140 @@ def optimize_pickup_delivery(request: PickupDeliveryOptimizeRequest):
         total_distance_meters=result.total_distance_meters,
         solver_used=result.solver_used,
         feasible=result.feasible,
+    )
+
+
+def _metrics_out(m: fleet.RouteMetrics) -> FleetRouteMetrics:
+    return FleetRouteMetrics(
+        distance_meters=m.distance_meters,
+        duration_seconds=m.duration_seconds,
+        fuel_liters=m.fuel_liters,
+        fuel_cost=m.fuel_cost,
+        driver_cost=m.driver_cost,
+        operating_cost=m.operating_cost,
+        fixed_cost=m.fixed_cost,
+        peak_load_kg=m.peak_load_kg,
+        total_cost=m.total_cost,
+        cost_is_monetary=m.cost_is_monetary,
+    )
+
+
+def _diagnostic_out(d: fleet.TripAssignmentDiagnostic) -> dict:
+    return {
+        "trip_id": d.trip_id,
+        "trip_weight_kg": d.trip_weight_kg,
+        "status": d.status,
+        "primary_failure_reason": d.primary_failure_reason,
+        "capacity_failures": d.capacity_failures,
+        "precedence_failures": d.precedence_failures,
+        "total_positions_tested": d.total_positions_tested,
+        "minimum_required_capacity_kg": d.minimum_required_capacity_kg,
+        "vehicle_diagnostics": [
+            {
+                "vehicle_id": vd.vehicle_id,
+                "vehicle_capacity_kg": vd.vehicle_capacity_kg,
+                "current_peak_load_kg": vd.current_peak_load_kg,
+                "static_remaining_capacity_kg": vd.static_remaining_capacity_kg,
+                "capacity_failures": vd.capacity_failures,
+                "precedence_failures": vd.precedence_failures,
+                "feasible_insertions": vd.feasible_insertions,
+                "best_peak_load_kg": vd.best_peak_load_kg,
+                "best_incremental_cost": vd.best_incremental_cost,
+                "best_pickup_position": vd.best_pickup_position,
+                "best_delivery_position": vd.best_delivery_position,
+                "total_pickup_positions_tested": vd.total_pickup_positions_tested,
+                "total_delivery_positions_tested": vd.total_delivery_positions_tested,
+            }
+            for vd in d.vehicle_diagnostics
+        ],
+    }
+
+
+@app.post("/optimize/fleet", response_model=FleetOptimizeResponse)
+def optimize_fleet(request: FleetOptimizeRequest):
+    """Assign jobs across a fleet AND sequence each vehicle's stops.
+
+    Returns a typed status rather than failing: an instance where some job fits
+    no vehicle is a legitimate business outcome (PARTIAL / NO_FEASIBLE_SOLUTION),
+    not a server error. Capacity and pickup-before-delivery remain hard
+    constraints enforced inside the solver via opt.route_is_feasible.
+    """
+    if len(request.jobs) > MAX_FLEET_JOBS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many jobs for one fleet optimization: {len(request.jobs)} (max {MAX_FLEET_JOBS}).",
+        )
+
+    jobs = [
+        opt.Job(
+            trip_id=j.trip_id,
+            pickup_idx=j.pickup_stop_index,
+            delivery_idx=j.delivery_stop_index,
+            load_weight_kg=j.load_weight_kg or 0.0,
+            parent_trip_id=j.parent_trip_id,
+            original_load_weight_kg=j.original_load_weight_kg,
+            allowed_vehicle_ids=frozenset(j.allowed_vehicle_ids) if j.allowed_vehicle_ids else None,
+        )
+        for j in request.jobs
+    ]
+    vehicles = [
+        fleet.FleetVehicle(
+            vehicle_id=v.vehicle_id,
+            capacity_kg=v.capacity_kg,
+            avg_kmpl_rated=v.avg_kmpl_rated,
+            fuel_price_per_l=v.fuel_price_per_l,
+            fixed_cost=v.fixed_cost,
+            driver_id=v.driver_id,
+            start_idx=v.start_idx,
+            end_idx=v.end_idx,
+            cost_per_km=v.cost_per_km,
+            driver_cost_per_hour=v.driver_cost_per_hour,
+            max_route_duration_seconds=v.max_route_duration_seconds,
+        )
+        for v in request.vehicles
+    ]
+    rates = fleet.CostRates(
+        driver_cost_per_hour=request.driver_cost_per_hour,
+        operating_cost_per_km=request.operating_cost_per_km,
+    )
+
+    try:
+        solution = fleet.fleet_solve(
+            jobs=jobs,
+            vehicles=vehicles,
+            duration_matrix=request.duration_matrix,
+            distance_matrix=request.distance_matrix,
+            rates=rates,
+            iterations=request.iterations,
+            seed=request.seed,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    by_id = {v.vehicle_id: v for v in vehicles}
+    if not solution.unassigned_trip_ids:
+        status = "SUCCESS"
+    elif solution.vehicles_used > 0:
+        status = "PARTIAL"
+    else:
+        status = "NO_FEASIBLE_SOLUTION"
+
+    return FleetOptimizeResponse(
+        status=status,
+        routes=[
+            FleetVehicleRoute(
+                vehicle_id=r.vehicle_id,
+                driver_id=r.driver_id,
+                order=r.route,
+                full_sequence=r.full_sequence(by_id[r.vehicle_id]),
+                trip_ids=r.trip_ids,
+                metrics=_metrics_out(r.metrics),
+            )
+            for r in solution.routes
+        ],
+        unassigned_trip_ids=solution.unassigned_trip_ids,
+        totals=_metrics_out(solution.totals),
+        vehicles_used=solution.vehicles_used,
+        explanation=fleet.explain_solution(solution, vehicles),
+        unassigned_diagnostics=[_diagnostic_out(d) for d in solution.unassigned_diagnostics],
     )

@@ -4,6 +4,7 @@ import { TripsToolbar } from "@/components/trip/TripsToolbar";
 import { RoutesTable } from "@/components/trip/RoutesTable";
 import { CreateTripModal } from "@/components/trip/CreateTripModal";
 import { CreateRouteModal } from "@/components/trip/CreateRouteModal";
+import { CreateFleetRouteModal } from "@/components/trip/CreateFleetRouteModal";
 import { IconPlus, IconRoute } from "@/components/common/icons";
 import { useRoutes } from "@/hooks/useRoutes";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -37,6 +38,7 @@ function routeMatches(route: Route, search: string, status: string, driver: stri
 export function TripsPage() {
   const [createTripOpen, setCreateTripOpen] = useState(false);
   const [createRouteOpen, setCreateRouteOpen] = useState(false);
+  const [planFleetOpen, setPlanFleetOpen] = useState(false);
 
   const [search, setSearch] = useState("");
   const [pickupDate, setPickupDate] = useState("");
@@ -73,6 +75,13 @@ export function TripsPage() {
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
+          <button
+            onClick={() => setPlanFleetOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            <IconRoute />
+            Plan Fleet Routes
+          </button>
           <button
             onClick={() => setCreateRouteOpen(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50"
@@ -119,6 +128,7 @@ export function TripsPage() {
 
       <CreateTripModal open={createTripOpen} onClose={() => setCreateTripOpen(false)} />
       <CreateRouteModal open={createRouteOpen} onClose={() => setCreateRouteOpen(false)} />
+      <CreateFleetRouteModal open={planFleetOpen} onClose={() => setPlanFleetOpen(false)} />
     </div>
   );
 }

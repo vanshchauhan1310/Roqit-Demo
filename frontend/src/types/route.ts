@@ -66,3 +66,15 @@ export interface RouteAssignPayload {
 export interface RouteReorderPayload {
   stop_ids: string[];
 }
+
+export interface FleetPlanRoutePayload {
+  vehicle_id: string;
+  driver_id: string | null;
+  name?: string | null;
+  stops: { trip_id: string; stop_type: "pickup" | "delivery" }[];
+}
+
+export interface CreateFleetPlanPayload {
+  pickup_time: string;
+  routes: FleetPlanRoutePayload[];
+}

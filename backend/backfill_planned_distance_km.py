@@ -18,7 +18,6 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.trip import Trip
-from app.services.trip_service import DEMO_ACTUAL_DISTANCE_FACTOR
 
 
 async def _fetch_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float | None:
@@ -59,8 +58,6 @@ async def main() -> None:
                 failed += 1
                 continue
             trip.planned_distance_km = round(distance_km, 1)
-            if trip.actual_distance_km is None:
-                trip.actual_distance_km = round(distance_km * DEMO_ACTUAL_DISTANCE_FACTOR, 1)
             db.add(trip)
             print(f"  {trip.trip_id}: planned_distance_km = {trip.planned_distance_km} km")
             fixed += 1

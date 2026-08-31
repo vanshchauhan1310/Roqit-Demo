@@ -66,6 +66,28 @@ class RouteReorderRequest(BaseModel):
     stop_ids: List[uuid.UUID]
 
 
+class FleetRouteStopCreate(BaseModel):
+    trip_id: str
+    stop_type: str
+
+
+class FleetRouteCreate(BaseModel):
+    vehicle_id: str
+    driver_id: str | None = None
+    name: str | None = None
+    stops: List[FleetRouteStopCreate]
+
+
+class FleetPlanCreateRequest(BaseModel):
+    """Reviewed optimizer routes to store as dispatch routes.
+
+    Split-load jobs are intentionally excluded until shipment parts have their
+    own database model.
+    """
+    pickup_time: datetime
+    routes: List[FleetRouteCreate]
+
+
 class RouteRead(RouteBase):
     model_config = ConfigDict(from_attributes=True)
 
