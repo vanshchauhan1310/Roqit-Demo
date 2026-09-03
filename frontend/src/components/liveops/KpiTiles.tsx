@@ -8,7 +8,15 @@ export interface KpiPoint {
   utilization: number;
 }
 
-function Spark({ data, color, dataKey }: { data: KpiPoint[]; color: string; dataKey: keyof KpiPoint }) {
+function Spark({
+  data,
+  color,
+  dataKey,
+}: {
+  data: KpiPoint[];
+  color: string;
+  dataKey: keyof KpiPoint;
+}) {
   return (
     <ResponsiveContainer width="100%" height={34}>
       <AreaChart data={data} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
@@ -39,6 +47,8 @@ function Tile({
   color,
   data,
   dataKey,
+  onClick,
+  tooltip,
 }: {
   label: string;
   value: string | number;
@@ -46,15 +56,39 @@ function Tile({
   color: string;
   data: KpiPoint[];
   dataKey: keyof KpiPoint;
+  onClick?: () => void;
+  tooltip?: string;
 }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-3.5 py-3">
+    <div
+      onClick={onClick}
+      title={tooltip}
+      className={`relative group rounded-xl border border-slate-800 bg-slate-900/70 px-3.5 py-3${
+        onClick
+          ? " cursor-pointer hover:border-slate-600 transition-colors"
+          : ""
+      }`}
+    >
       <div className="flex items-baseline justify-between">
-        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</span>
+        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+          {label}
+        </span>
         <span className="text-[10px] text-slate-500">{sub}</span>
       </div>
-      <div className="text-2xl font-semibold text-slate-100 tnum leading-tight">{value}</div>
+      <div className="text-2xl font-semibold text-slate-100 tnum leading-tight">
+        {value}
+      </div>
       <Spark data={data} color={color} dataKey={dataKey} />
+      {onClick && (
+        <span className="absolute top-2.5 right-2.5 text-[9px] text-slate-600 group-hover:text-slate-400">
+          view ›
+        </span>
+      )}
+      {tooltip && (
+        <div className="pointer-events-none absolute left-1/2 bottom-full z-30 mb-1.5 w-56 -translate-x-1/2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-[10px] leading-snug text-slate-300 opacity-0 shadow-xl transition-opacity group-hover:opacity-100">
+          {tooltip}
+        </div>
+      )}
     </div>
   );
 }
@@ -65,7 +99,14 @@ function CountdownRing({ seconds, total }: { seconds: number; total: number }) {
   const frac = Math.max(0, Math.min(1, seconds / total));
   return (
     <svg width="40" height="40" viewBox="0 0 40 40" className="-rotate-90">
-      <circle cx="20" cy="20" r={r} fill="none" stroke="#1e293b" strokeWidth="3.5" />
+      <circle
+        cx="20"
+        cy="20"
+        r={r}
+        fill="none"
+        stroke="#1e293b"
+        strokeWidth="3.5"
+      />
       <circle
         cx="20"
         cy="20"
@@ -108,6 +149,9 @@ export function KpiTiles({
   onGenerateNow,
   onOptimize,
   optimizing,
+  onOpenQueueDetail,
+  onOpenTripsDetail,
+  onOpenRoutesDetail,
 }: {
   data: KpiPoint[];
   queue: number;
@@ -122,12 +166,40 @@ export function KpiTiles({
   onGenerateNow: () => void;
   onOptimize: () => void;
   optimizing: boolean;
+  onOpenQueueDetail: () => void;
+  onOpenTripsDetail: () => void;
+  onOpenRoutesDetail: () => void;
 }) {
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-      <Tile label="Queue depth" value={queue} sub="unassigned" color="#fbbf24" data={data} dataKey="queue" />
-      <Tile label="Trips today" value={trips} sub="total" color="#38bdf8" data={data} dataKey="trips" />
-      <Tile label="Active routes" value={routes} sub="fleet" color="#34d399" data={data} dataKey="routes" />
+      <Tile
+        label="Queue depth"
+        value={queue}
+        sub="unassigned"
+        color="#fbbf24"
+        data={data}
+        dataKey="queue"
+        onClick={onOpenQueueDetail}
+      />
+      <Tile
+        label="Trips today"
+        value={trips}
+        sub={queue > 0 ? `${queue} unassigned` : "all assigned"}
+        color="#38bdf8"
+        data={data}
+        dataKey="trips"
+        onClick={onOpenTripsDetail}
+        tooltip={`Total trips in the system. "Unassigned" = trips that have not yet been routed to a vehicle/driver — they sit in the assignment queue until the engine's greedy best-insertion solver finds a feasible route (respecting capacity, distance, time-window, and driver HOS limits). When the fleet has duty hours available, the queue drains toward zero.`}
+      />
+      <Tile
+        label="Active routes"
+        value={routes}
+        sub="fleet"
+        color="#34d399"
+        data={data}
+        dataKey="routes"
+        onClick={onOpenRoutesDetail}
+      />
       <Tile
         label="Fleet utilization"
         value={`${utilization}%`}
@@ -135,6 +207,7 @@ export function KpiTiles({
         color="#a78bfa"
         data={data}
         dataKey="utilization"
+        tooltip="Share of total fleet payload capacity currently booked by assigned trips: sum(used_capacity_kg) / sum(capacity_kg) across all routes. Low % means lots of free capacity; >90% means routes are near their load limit."
       />
       <Tile
         label="Avg assignment"
@@ -143,13 +216,19 @@ export function KpiTiles({
         color="#f472b6"
         data={data}
         dataKey="trips"
+        tooltip="Average queue latency: the mean time between a trip being received by the engine and its assignment to a route. This includes the greedy best-insertion solver scoring all candidate routes (capacity, distance, time-window feasibility, driver HOS limits) and selecting the minimum-cost insertion. A rising number means the engine is falling behind incoming demand; a low/zero number means it is keeping up."
       />
 
       {/* Feed control tile */}
       <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-3.5 py-3">
         <div className="flex items-center justify-between">
-          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">Auto feed</span>
-          <CountdownRing seconds={feedEnabled ? feedSecondsLeft : 0} total={feedIntervalSec} />
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+            Auto feed
+          </span>
+          <CountdownRing
+            seconds={feedEnabled ? feedSecondsLeft : 0}
+            total={feedIntervalSec}
+          />
         </div>
         <div className="flex items-center gap-1.5 mt-1">
           <button

@@ -5,4 +5,8 @@ export const apiClient = axios.create({
   headers: {
     "Content-Type": "application/json",
   },
+  // Fail visibly instead of spinning forever when a proxied request stalls -
+  // an unterminated promise keeps react-query in the "Loading..." state
+  // indefinitely (the infinite detail-drawer spinner bug).
+  timeout: 20000,
 });

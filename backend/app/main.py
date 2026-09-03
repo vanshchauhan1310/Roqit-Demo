@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,6 +7,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import trips, routes, vehicles, drivers, realtime, reports, geocode, roster, predictions
 from app.core.config import settings
 from app.workers.supervisor import supervisor
+
+# Make background-worker lifecycle (and failures) visible in docker logs.
+# Without this, logger.info/logger.exception from the worker threads is
+# silently swallowed and a stalled worker is undiagnosable from outside.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s",
+)
 
 
 @asynccontextmanager

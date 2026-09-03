@@ -15,7 +15,20 @@ from app.models.vehicle import Vehicle
 from app.optimization.greedy.insertion import greedy_insertion, GreedyResult
 from app.optimization.candidates.search import candidate_search
 from app.optimization.audit.logger import audit_logger
+from app.optimization.state import (
+    AVG_ROUTE_SPEED_KPH,
+    MAX_DRIVER_HOS_HOURS,
+    SERVICE_HOURS_PER_STOP,
+    TripAssignmentStatus,
+    duty_window_start,
+    estimate_route_hours,
+    estimate_trip_hours,
+    repair_trip_assignment,
+    validate_trip_assignment,
+    vehicle_active_load_kg,
+)
 from app.infrastructure.queue import Queue, QueueJob, get_queue
+from app.optimization.state import acquire_writer_lock
 
 
 class TripAssignmentWorker:
@@ -38,6 +51,15 @@ class TripAssignmentWorker:
 
         db = SessionLocal()
         try:
+            # Writer funnel lock: serialize with the LNS optimizer and the
+            # trip-completion worker so we can never deadlock with them over
+            # route/trip row locks (see state.acquire_writer_lock).
+            # Wait up to 75s (just past the LNS run budget) so a job that
+            # lands mid-LNS *queues behind it and proceeds* instead of
+            # failing + requeueing and burning attempts every cycle.
+            if not acquire_writer_lock(db, lock_timeout_s=75):
+                print(f"Trip {trip_id}: writer lock busy, deferring job")
+                return False  # retry the job later
             return self._assign_trip(db, trip_id)
         except Exception as e:
             print(f"Error assigning trip {trip_id}: {e}")
@@ -52,15 +74,39 @@ class TripAssignmentWorker:
             print(f"Trip {trip_id} not found")
             return False
 
-        # Check if already assigned
+        # Check if already assigned - using the canonical assignment-state
+        # validator, never blindly trusting a non-null route_id (a trip can
+        # carry a route_id to a deleted route, or lack a matching RouteStop).
         if trip.route_id:
-            print(f"Trip {trip_id} already assigned to route {trip.route_id}")
-            return True
+            status = validate_trip_assignment(db, trip)
+            if status == TripAssignmentStatus.VALID:
+                print(f"Trip {trip_id} already assigned to route {trip.route_id}")
+                return True
+
+            # stale/orphaned/mismatched assignment — repair it first so the
+            # existing assignment pipeline receives a genuinely unassigned trip
+            if repair_trip_assignment(db, trip):
+                db.commit()
+                print(f"Trip {trip_id}: repaired invalid assignment state ({status.value})")
+                # The commit above ended the transaction — and with it the
+                # xact-scoped writer funnel lock. Re-acquire before the
+                # mutation phase below, otherwise greedy insertion races the
+                # LNS destroy/repair on route_stops rows -> deadlock
+                # (observed: UPDATE sequence vs DELETE route_stops).
+                if not acquire_writer_lock(db, lock_timeout_s=75):
+                    print(f"Trip {trip_id}: writer lock busy after repair, deferring job")
+                    return False  # retry the job later
 
         # Run greedy insertion
         result = greedy_insertion.assign_trip(db, trip)
 
         if result.success and result.insertion_option:
+            # Defensive re-acquire: greedy probing can commit internally
+            # (e.g. repair helpers), and any commit releases the funnel.
+            # This call is free if we already hold the lock in this txn.
+            if not acquire_writer_lock(db):
+                print(f"Trip {trip_id}: writer lock busy before insertion, deferring job")
+                return False
             # Apply the insertion
             route = greedy_insertion.apply_insertion(db, result.insertion_option, trip)
 
@@ -167,6 +213,7 @@ class TripAssignmentWorker:
 
         # Update trip
         trip.route_id = str(route.route_id)
+        trip.assigned_at = datetime.now(timezone.utc)
         trip.driver_id = driver.driver_id
         trip.vehicle_id = vehicle.vehicle_id
         if vehicle.vehicle_type:
@@ -213,24 +260,16 @@ class TripAssignmentWorker:
         if not candidates:
             return None
 
-        # Sum of used capacity across each candidate's active routes.
-        route_loads = dict(
-            db.query(Route.vehicle_id, func.coalesce(func.sum(Route.used_capacity_kg), 0.0))
-            .filter(
-                Route.vehicle_id.in_([v.vehicle_id for v in candidates]),
-                Route.status.in_(["planned", "active", "in-transit"]),
-            )
-            .group_by(Route.vehicle_id)
-            .all()
-        )
-
+        # Sum of used capacity across each candidate's active routes -- derived
+        # from authoritative RouteStop/Trip rows (never from the cached
+        # used_capacity_kg columns, which can drift stale).
         scored = []
         for v in candidates:
-            used = float(route_loads.get(v.vehicle_id, 0) or 0)
+            used = vehicle_active_load_kg(db, v)
             cap = v.load_capacity_kg or 0
-            trip_load = trip.load_weight_kg or 0
+            trip_load = trip.load_weight_kg or  0
             if cap > 0 and used + trip_load > cap:
-                continue  # would exceed vehicle capacity — not eligible
+                continue  # would exceed vehicle aggregate capacity -- not eligible
             scored.append((cap - used, v))  # headroom (higher = better)
 
         if not scored:
@@ -239,10 +278,11 @@ class TripAssignmentWorker:
         scored.sort(key=lambda hv: (-hv[0], hv[1].vehicle_id))
         return scored[0][1]
 
-    # Maximum driver hours-of-service per day (logistics industry standard).
-    MAX_DRIVER_HOS_HOURS = 14.0
-    AVG_ROUTE_SPEED_KPH = 40.0
-    SERVICE_HOURS_PER_STOP = 0.1  # 6 minutes per stop for pickup/delivery
+    # Maximum driver hours-of-service per day (shared with the feasibility
+    # engine's HOS constraint so both paths enforce the same limit).
+    MAX_DRIVER_HOS_HOURS = MAX_DRIVER_HOS_HOURS
+    AVG_ROUTE_SPEED_KPH = AVG_ROUTE_SPEED_KPH  # kept for backward compat
+    SERVICE_HOURS_PER_STOP = SERVICE_HOURS_PER_STOP
 
     def _haversine_km(self, lat1, lon1, lat2, lon2) -> float:
         from math import radians, sin, cos, sqrt, atan2
@@ -254,28 +294,32 @@ class TripAssignmentWorker:
         return 2 * R * atan2(sqrt(a), sqrt(1 - a))
 
     def _estimate_trip_hours(self, trip: Trip) -> float:
-        """Estimated driving hours for a single trip (start -> end)."""
-        if trip.gps_start_lat and trip.gps_start_lon and trip.gps_end_lat and trip.gps_end_lon:
-            km = self._haversine_km(
-                trip.gps_start_lat, trip.gps_start_lon,
-                trip.gps_end_lat, trip.gps_end_lon,
-            )
-            return (km / self.AVG_ROUTE_SPEED_KPH) + 2 * self.SERVICE_HOURS_PER_STOP
-        return self.SERVICE_HOURS_PER_STOP * 2
+        """Estimated driving hours for a single trip (start -> end).
+
+        Delegates to the shared estimator in the state layer so the new-route
+        path and the feasibility engine's HOS check use identical numbers.
+        """
+        return estimate_trip_hours(trip)
 
     def _estimate_route_hours(self, route: Route) -> float:
-        """Estimated total service hours for a route (travel + per-stop)."""
-        geocoded = [s for s in route.stops if s.latitude and s.longitude]
-        total_km = 0.0
-        for prev, stop in zip(geocoded, geocoded[1:]):
-            total_km += self._haversine_km(prev.latitude, prev.longitude, stop.latitude, stop.longitude)
-        return (total_km / self.AVG_ROUTE_SPEED_KPH) + len(route.stops) * self.SERVICE_HOURS_PER_STOP
+        """Estimated total service hours for a route (travel + per-stop).
+
+        Delegates to the shared estimator in the state layer so the new-route
+        path and the feasibility engine's HOS check use identical numbers.
+        """
+        return estimate_route_hours(route.stops)
 
     def _driver_worked_hours(self, db: Session, driver_id: str) -> float:
-        """Total estimated hours already assigned to a driver's active routes."""
+        """Estimated hours assigned to a driver's routes within the current
+        rolling duty window (older routes don't count against the 14h clock -
+        see state.DUTY_WINDOW_HOURS)."""
+        # autoflush=False would hide same-session insertions (see state.py).
+        if db.new or db.dirty:
+            db.flush()
         routes = db.query(Route).filter(
             Route.driver_id == driver_id,
             Route.status.in_(["planned", "active", "in-transit"]),
+            Route.created_at >= duty_window_start(),
         ).all()
         return sum(self._estimate_route_hours(r) for r in routes)
 
@@ -302,17 +346,23 @@ class TripAssignmentWorker:
             return None
 
         est_route_hours = self._estimate_trip_hours(trip)
-        scored = []
+        within_limit = []
+        over_limit = []
         for d in candidates:
             worked = self._driver_worked_hours(db, d.driver_id)
             if worked + est_route_hours > self.MAX_DRIVER_HOS_HOURS:
-                continue  # would exceed the 14h service limit
-            scored.append((worked, d))  # less-worked first
+                over_limit.append((worked, d))
+            else:
+                within_limit.append((worked, d))
 
-        if not scored:
-            return None
-        scored.sort(key=lambda wd: (wd[0], wd[1].driver_id))
-        return scored[0][1]
+        # Prefer drivers within their HOS limit (least-loaded first)
+        if within_limit:
+            within_limit.sort(key=lambda wd: (wd[0], wd[1].driver_id))
+            return within_limit[0][1]
+
+        # All drivers over limit -- pick the least-loaded one so trips still get assigned
+        over_limit.sort(key=lambda wd: (wd[0], wd[1].driver_id))
+        return over_limit[0][1]
 
 
 def create_trip_assignment_job(trip_id: str) -> str:
@@ -322,29 +372,85 @@ def create_trip_assignment_job(trip_id: str) -> str:
 
 
 def sweep_unassigned_trips(batch: int = 25) -> int:
-    """Re-enqueue trips that are still unassigned (route_id IS NULL).
+    """Re-enqueue trips that still need assignment.
 
-    The auto-feed / external source can create trips while the worker is
-    briefly down or when a job is lost; this sweeper drains that backlog so
-    the Live Ops "queue depth" returns to ~0 when the feed is idle.
+
+
+    A trip enters the sweeper when it is ANY of:
+
+
+    - genuinely unassigned (``route_id IS NULL``)
+    - ``route_id`` points to a non-existent route (orphaned>
+    - the referenced route exists but no RouteStop exists for the trip
+    -the trip's RouteStop's ``route_id`` does not match ``trip.route_id``
+
+
+    All of these are repaired by ``_assign_trip``'s state validation before the
+    existing assignment pipeline runs; this sweeper just makes sure such trips
+    actually get re-enqueued (the old ``route_id IS NULL``-only filter missed
+    orphaned trips forever)..
     """
+
     db = SessionLocal()
     try:
         trips = (
             db.query(Trip)
-            .filter(Trip.route_id.is_(None))
+            .filter(Trip.status.in_(["scheduled", "unassigned"]))
             .order_by(Trip.pickup_time.asc().nullslast())
-            .limit(batch)
+            .limit(batch * 4)
             .all()
         )
-        queued = 0
+        if not trips:
+            return 0
+
+
+
+        # Preload route existence (string keys match Trip.route_id's format) and
+        # RouteStop route affiliations for the batch to avoid per-trip queries..
+        route_ids = {t.route_id for t in trips if t.route_id}
+        routes = {
+            str(r): True
+            for (r,)in db.query(Route.route_id).filter(Route.route_id.in_(route_ids)).all()
+        } if route_ids else {}
+
+
+
+        stop_rows = (
+            db.query(RouteStop.trip_id, RouteStop.route_id)
+            .filter(RouteStop.trip_id.in_({t.trip_id for t in trips}))
+            .all()
+        ) if trips else []
+        stops_by_trip = {}
+        for trip_id_, route_id_ in stop_rows:
+
+            stops_by_trip.setdefault(trip_id_, set()).add(str(route_id_))
+
+
+
+        candidates = []
         for t in trips:
-            if t.status not in ("scheduled", "unassigned"):
+            if not t.route_id:
+                candidates.append(t)
                 continue
+            if str(t.route_id) not in routes:
+                candidates.append(t)  # orphaned - route gone
+                continue
+            matched = stops_by_trip.get(t.trip_id, set())
+            if not matched:
+                candidates.append(t)  # route exists but no RouteStop
+                continue
+            if str(t.route_id) not in matched:
+                candidates.append(t)  # RouteStop.route_id != Trip.route_id
+                continue
+
+
+
+        queued = 0
+        for t in candidates[:batch]:
             create_trip_assignment_job(t.trip_id)
             queued += 1
         if queued:
-            print(f"[SWEEP] re-enqueued {queued} unassigned trip(s) for assignment")
+            print(f"[SWEEP] re-enqueued {queued} trip(s) needing assignment")
         return queued
     finally:
         db.close()

@@ -7,6 +7,7 @@ import { useFleet } from "@/hooks/useFleet";
 import { LiveOpsMap } from "@/components/liveops/LiveOpsMap";
 import { ActivityFeed } from "@/components/liveops/ActivityFeed";
 import { KpiTiles, type KpiPoint } from "@/components/liveops/KpiTiles";
+import { KpiDetailModal, type KpiDetailView } from "@/components/liveops/KpiDetailModal";
 import { PlanStrip } from "@/components/liveops/PlanStrip";
 import { DetailDrawer, type Selection } from "@/components/liveops/DetailDrawer";
 import { LnsImpactPanel } from "@/components/liveops/LnsImpactPanel";
@@ -39,6 +40,7 @@ export function LiveOpsPage() {
   const [impactOpen, setImpactOpen] = useState(false);
   const [impactRunId, setImpactRunId] = useState<string | null>(null);
   const [intelOpen, setIntelOpen] = useState(false);
+  const [kpiView, setKpiView] = useState<KpiDetailView | null>(null);
 
   const openTrip = (id: string) => setSelection({ type: "trip", id });
   const openRoute = (id: string) => {
@@ -51,8 +53,10 @@ export function LiveOpsPage() {
   };
 
   const utilization = useMemo(() => {
-    const cap = routes.reduce((a, r) => a + (r.capacity_kg ?? 0), 0);
-    const used = routes.reduce((a, r) => a + (r.used_capacity_kg ?? 0), 0);
+    // Only calculate utilization for active routes (planned, active, in-transit)
+    const activeRoutes = routes.filter((r) => ["planned", "active", "in-transit"].includes((r.status || "").toLowerCase()));
+    const cap = activeRoutes.reduce((a, r) => a + (r.capacity_kg ?? 0), 0);
+    const used = activeRoutes.reduce((a, r) => a + (r.used_capacity_kg ?? 0), 0);
     return cap > 0 ? Math.round((used / cap) * 100) : 0;
   }, [routes]);
   const avgLatency = latenciesSec.length
@@ -162,7 +166,29 @@ export function LiveOpsPage() {
         onGenerateNow={() => void sim.generateNow()}
         onOptimize={() => void handleOptimize()}
         optimizing={optimizing}
+        onOpenQueueDetail={() => setKpiView("queue")}
+        onOpenTripsDetail={() => setKpiView("trips")}
+        onOpenRoutesDetail={() => setKpiView("routes")}
       />
+
+      {/* Detailed drill-down for the queue / trips / routes KPI tiles */}
+      {kpiView && (
+        <KpiDetailModal
+          view={kpiView}
+          incoming={incoming}
+          allTrips={allTrips}
+          routes={routes}
+          onClose={() => setKpiView(null)}
+          onOpenTrip={(id) => {
+            setKpiView(null);
+            openTrip(id);
+          }}
+          onOpenRoute={(id) => {
+            setKpiView(null);
+            openRoute(id);
+          }}
+        />
+      )}
 
       {/* Operator alerts + stakeholder savings — click a card to jump in */}
       <AlertStrip

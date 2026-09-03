@@ -36,14 +36,14 @@
 /* Animated assignment flight-line drawn on the map */
 .flight-line {
   stroke-dasharray: 8 8;
-  animation: flight-draw 1.2s ease-out forwards, flight-fade 4s ease-in forwards;
+  animation: flight-draw 1.2s ease-out forwards, flight-fade 8s ease-in forwards;
 }
 @keyframes flight-draw {
   from { stroke-dashoffset: 400; opacity: 0.95; }
   to   { stroke-dashoffset: 0;   opacity: 0.95; }
 }
 @keyframes flight-fade {
-  0%, 60% { opacity: 0.95; }
+  0%, 75% { opacity: 0.95; }
   100%    { opacity: 0; }
 }
 

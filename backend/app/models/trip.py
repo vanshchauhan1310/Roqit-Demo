@@ -34,6 +34,10 @@ class Trip(Base):
     actual_delivery_time: Mapped[DateTime | None] = mapped_column(DateTime)
     delay_minutes: Mapped[int | None] = mapped_column(BigInteger)
     status: Mapped[str | None] = mapped_column(String)
+    # Timestamp set by the assignment engine when the trip is attached to a
+    # route. Drives the demo delivery lifecycle: the completion worker marks
+    # the trip completed 10 minutes after this moment.
+    assigned_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
 
     weather_condition: Mapped[str | None] = mapped_column(String)
     road_type: Mapped[str | None] = mapped_column(String)

@@ -12,5 +12,20 @@ from app.core.config import settings
 # to 10s) before releasing it - pool_size=3/overflow=2 (5 total) was too thin
 # for that burst and caused QueuePool timeouts. Raised to 12, still well under
 # the 15 ceiling so scripts always have headroom.
-engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True, pool_size=8, max_overflow=4)
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=8,
+    max_overflow=4,
+    connect_args={
+        # Circuit breaker: any session that sits "idle in transaction" for >90s
+        # is terminated by Postgres. Normally this never fires — sessions only
+        # go idle-in-transaction briefly between queries — but a wedged worker
+        # (e.g. an LNS run stuck mid-iteration) would otherwise hold its
+        # open transaction — and with it the writer funnel advisory lock —
+        # indefinitely, deadlocking every other writer. Postgres killing the
+        # session releases the lock and the funnel self-heals.
+        "options": "-c idle_in_transaction_session_timeout=90000",
+    },
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

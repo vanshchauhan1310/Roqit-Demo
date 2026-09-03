@@ -13,6 +13,13 @@ from sqlalchemy.orm import Session
 from app.models.route import Route, RouteStop
 from app.models.trip import Trip
 from app.models.vehicle import Vehicle
+from app.optimization.state import (
+    ACTIVE_STATUSES,
+    MAX_DRIVER_HOS_HOURS,
+    duty_window_start,
+    estimate_route_hours,
+    vehicle_active_load_kg,
+)
 
 if TYPE_CHECKING:
     from app.models.driver import Driver
@@ -72,7 +79,7 @@ class FeasibilityEngine:
         self._check_vehicle_compatibility(route, trip, vehicle, result)
 
         # 3. Driver constraints
-        self._check_driver_constraints(route, trip, driver, result)
+        self._check_driver_constraints(db, route, new_stops, trip, driver, result)
 
         # 4. Route duration
         self._check_route_duration(db, route, new_stops, result)
@@ -105,24 +112,24 @@ class FeasibilityEngine:
         vehicle: Optional[Vehicle],
         result: FeasibilityResult,
     ) -> None:
-        """Check if vehicle has capacity for new trip."""
+        """Check if vehicle has capacity for new trip.
+
+        The hard capacity constraint is the vehicle's AGGREGATE active load
+        across all of its active routes, not just the load on the candidate
+        route - a vehicle serving 3 routes each under its capacity can still
+        be over-capacity overall. Load is derived from authoritative
+        RouteStop/Trip rows, never from cached capacity columns.
+        """
         if vehicle is None:
             return
 
-        # Get current used capacity from route stops
-        current_load = sum(
-            (trip.load_weight_kg or 0)
-            for stop in route.stops
-            if stop.trip_id and stop.stop_type == "pickup"
-            for trip in [db.get(Trip, stop.trip_id)]
-            if trip is not None
-        )
-
+        current_load = vehicle_active_load_kg(db, vehicle)
         new_load = trip.load_weight_kg or 0
-        if current_load + new_load > (vehicle.load_capacity_kg or float('inf')):
+        cap = vehicle.load_capacity_kg
+        if cap is not None and current_load + new_load > cap:
             result.add_violation(
                 "CAPACITY",
-                f"Vehicle capacity exceeded: {current_load + new_load} kg > {vehicle.load_capacity_kg} kg"
+                f"Vehicle aggregate capacity exceeded: {current_load + new_load} kg > {cap} kg"
             )
 
     def _check_vehicle_compatibility(
@@ -144,12 +151,14 @@ class FeasibilityEngine:
 
     def _check_driver_constraints(
         self,
+        db: Session,
         route: Route,
+        new_stops: list[RouteStop],
         trip: Trip,
         driver: Optional["Driver"],
         result: FeasibilityResult,
     ) -> None:
-        """Check driver constraints (license, hours, etc.)."""
+        """Check driver constraints (license, HOS, etc.)."""
         if driver is None:
             return
 
@@ -160,6 +169,54 @@ class FeasibilityEngine:
                 "LICENSE_MISMATCH",
                 f"Trip requires {trip_license}, driver has {driver.license_type}"
             )
+
+        # Hours-of-service: reject if inserting this trip would push the
+        # driver past MAX_DRIVER_HOS_HOURS. The candidate route is excluded
+        # from the driver's current-hours sum (its projected duration already
+        # includes the new trip via ``new_stops``) so the current route's
+        # baseline is not double-counted. Uses the SHARED duration estimator
+        # (state.estimate_route_hours - travel + per-stop service time) so the
+        # insertion path, the new-route path, and the audit agree on hours.
+        other_hours = self._driver_active_hours(
+            db, driver.driver_id, exclude_route_id=route.route_id
+        )
+        candidate_route_hours = estimate_route_hours(new_stops)
+        projected_hours = other_hours + candidate_route_hours
+        if projected_hours > MAX_DRIVER_HOS_HOURS:
+            result.add_violation(
+                "DRIVER_HOS",
+                f"Driver hours-of-service exceeded: {projected_hours:.1f}h > "
+                f"{MAX_DRIVER_HOS_HOURS:.1f}h limit"
+            )
+
+    def _driver_active_hours(
+        self,
+        db: Session,
+        driver_id: str,
+        exclude_route_id=None,
+    ) -> float:
+        """Estimated hours already assigned to a driver's active routes,
+        excluding the candidate route (whose duration is evaluated via the
+        projected stop list). Uses the existing haversine route-duration
+        calculation."""
+        # autoflush=False would hide same-session route/stop insertions from
+        # the queries below, under-counting committed hours (see state.py).
+        if db.new or db.dirty:
+            db.flush()
+        routes = db.query(Route).filter(
+            Route.driver_id == driver_id,
+            Route.status.in_(ACTIVE_STATUSES),
+            # Rolling duty window: hours from older routes don't count against
+            # the driver's current 14h clock (see state.DUTY_WINDOW_HOURS).
+            Route.created_at >= duty_window_start(),
+        ).all()
+        total_hours = 0.0
+        for r in routes:
+            if exclude_route_id is not None and r.route_id == exclude_route_id:
+                continue
+            stops = db.query(RouteStop).filter(RouteStop.route_id == r.route_id).all()
+            total_hours += estimate_route_hours(stops)
+        return total_hours
 
     def _check_route_duration(
         self,

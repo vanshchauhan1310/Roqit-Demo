@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.route import Route, RouteStop
 from app.models.trip import Trip
+from app.optimization.state import sync_route_capacity
 
 
 @dataclass
@@ -93,16 +94,26 @@ class RandomDestroy(DestroyOperator):
 
             # Clear trip assignment
             trip.route_id = None
+            trip.assigned_at = None
             db.add(trip)
 
             removed_trips.append(trip)
             modified_routes.add(route)
 
-        db.commit()
+        # Flush pending deletes so the deleted RouteStop rows are removed from
+        # the identity map; otherwise they linger in route.stops collections
+        # and crash subsequent access with "Instance has been deleted".
+        db.flush()
 
-        # Refresh routes
+        # Refresh routes and synchronise cached capacity fields from the
+        # surviving stops, so destroy never leaves stale used/remaining
+        # capacity (phantom utilization) behind.
+        # Expire the stops relationship so SQLAlchemy reloads it from the
+        # database (deleted stops are gone; survivors only).
         for route in modified_routes:
             db.refresh(route)
+            db.expire(route, ['stops'])
+            sync_route_capacity(db, route)
 
         return DestroyResult(
             removed_trips=removed_trips,
@@ -186,16 +197,21 @@ class RouteDestroy(DestroyOperator):
                         removed_stop_ids.extend([pickup.stop_id, delivery.stop_id])
 
                         trip.route_id = None
+                        trip.assigned_at = None
                         db.add(trip)
 
                         removed_trips.append(trip)
 
             modified_routes.append(route)
 
-        db.commit()
+        # NOTE: intentionally NO db.commit() here.  Same rationale as in
+        # RandomDestroy: the destroy phase only stages changes in the current
+        # transaction; the LNS optimizer commits/rolls back atomically per
+        # iteration, so a failed run can never strand trips un-assigned.
 
         for route in modified_routes:
             db.refresh(route)
+            sync_route_capacity(db, route)
 
         return DestroyResult(
             removed_trips=removed_trips,

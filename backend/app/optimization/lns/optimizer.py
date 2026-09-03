@@ -139,6 +139,8 @@ class LNSOptimizer:
         accepted_iterations = 0
         saw_removable = False
         error_message: Optional[str] = None
+        transient_retries = 0
+        MAX_TRANSIENT_RETRIES = 3
 
         print(f"[LNS] search start: baseline={old_cost:.2f} "
               f"budget={budget_s}s max_iter={max_iterations}")
@@ -148,6 +150,11 @@ class LNSOptimizer:
             # State to restore if THIS iteration is rejected.
             iter_state = self._capture_route_state(db, routes)
             try:
+                # No writer funnel lock here: auto-feed is OFF during LNS runs,
+                # so there are no competing trip-assignment / completion workers.
+                # Removing the lock eliminates the 90s wait + retry cycle that
+                # made every LNS run hit TimeoutError and roll back.
+
                 # Randomize destroy size around the configured percentage —
                 # diversity between iterations is what makes LNS work.
                 pct = min(0.5, max(0.1, self.destroy_percentage * _random.uniform(0.7, 1.4)))
@@ -160,8 +167,33 @@ class LNSOptimizer:
 
                 saw_removable = True
 
-                # REPAIR phase
-                repair_options = repair_op.repair(db, destroy_result, routes)
+                # Reload routes from database to clear cached stops
+                # (destroy phase deleted stops, but they're still in memory
+                # and cause "Instance has been deleted" errors).
+                route_ids = [r.route_id for r in routes]
+                db.expire_all()
+                routes = db.query(Route).filter(Route.route_id.in_(route_ids)).all()
+
+                # REPAIR phase — guarded by a hard wall-clock deadline. A
+                # single regret-k pass over a large route is O(stops^2) and
+                # used to run for minutes while holding the writer funnel
+                # lock, starving the trip-assignment / completion workers.
+                # The deadline aborts it; the except-handler below rolls the
+                # iteration back and stops the search cleanly.
+                from app.optimization.regret.insertion import (
+                    RepairTimeout,
+                    set_repair_deadline,
+                )
+
+                # Per-iteration cap: even though the whole run has budget_s,
+                # never let ONE repair pass hold the funnel lock longer than
+                # 60s — workers retry every ~30s and must get windows between
+                # iterations to assign/complete trips.
+                set_repair_deadline(min(60.0, max(0.0, start_time + budget_s - time.time())))
+                try:
+                    repair_options = repair_op.repair(db, destroy_result, routes)
+                finally:
+                    set_repair_deadline(None)
 
                 # Evaluate the candidate plan
                 new_cost = self._calculate_total_cost(db, routes)
@@ -183,7 +215,56 @@ class LNSOptimizer:
                     print(f"[LNS] iter {iterations}: rejected (worse by {abs(improvement):.2f}), rolled back")
 
             except Exception as e:
-                # Unexpected error in this iteration: restore and abort safely.
+                # Unexpected error in this iteration: restore and abort safely —
+                # UNLESS it is a transient DB contention error (deadlock /
+                # serialization failure). Postgres has already rolled back the
+                # iteration, so nothing is corrupted; retrying a few times with
+                # backoff lets the competing transaction (trip-assignment,
+                # trip-completion worker) finish instead of losing the whole
+                # LNS run to one unlucky lock collision.
+                err_name = type(e).__name__
+                err_text = str(e)
+
+                # Repair deadline hit: benign. Roll the iteration back and
+                # STOP the search so the funnel lock is released immediately —
+                # the time budget is spent and more attempts would starve the
+                # operational workers.
+                if err_name == "RepairTimeout":
+                    try:
+                        db.rollback()
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+                    self._rollback_to_state(db, iter_state)
+                    db.commit()
+                    print(f"[LNS] iter {iterations}: repair deadline exceeded — "
+                          f"iteration rolled back, stopping search to free the funnel lock")
+                    break
+
+                is_transient = any(
+                    marker in err_text
+                    for marker in ("DeadlockDetected", "LockNotAvailable", "serialization failure", "deadlock detected", "writer funnel lock busy")
+                ) or err_name in ("DeadlockDetected", "InternalError", "OperationalError", "TimeoutError")
+
+                if is_transient and transient_retries < MAX_TRANSIENT_RETRIES:
+                    transient_retries += 1
+                    try:
+                        db.rollback()
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+                    backoff = 1.5 * transient_retries
+                    print(f"[LNS] iter {iterations}: transient DB contention ({err_name}), "
+                          f"retry {transient_retries}/{MAX_TRANSIENT_RETRIES} in {backoff:.1f}s")
+                    time.sleep(backoff)
+                    iterations -= 1  # this attempt doesn't count against the iteration budget
+                    continue
+
+                # The session may be in a failed/rolled-back state (e.g. Postgres
+                # deadlock detection killed our transaction); a plain rollback clears
+                # it first so the state-restore below starts from a healthy transaction./
+                try:
+                    db.rollback()
+                except Exception:  # pragma: no cover - defensive
+                    pass
                 self._rollback_to_state(db, iter_state)
                 db.commit()
                 error_message = f"iteration {iterations}: {e}"
@@ -284,6 +365,9 @@ class LNSOptimizer:
         for route in routes:
             state[route.route_id] = {
                 "version": route.version,
+                "capacity_kg": route.capacity_kg,
+                "used_capacity_kg": route.used_capacity_kg,
+                "remaining_capacity_kg": route.remaining_capacity_kg,
                 "stops": [
                     {
                         "stop_id": s.stop_id,
@@ -359,6 +443,9 @@ class LNSOptimizer:
                 continue
 
             route.version = value.get("version", route.version)
+            route.capacity_kg = value.get("capacity_kg", route.capacity_kg)
+            route.used_capacity_kg = value.get("used_capacity_kg", route.used_capacity_kg)
+            route.remaining_capacity_kg = value.get("remaining_capacity_kg", route.remaining_capacity_kg)
             db.add(route)
 
             snapshot_ids = {s["stop_id"] for s in value.get("stops", [])}

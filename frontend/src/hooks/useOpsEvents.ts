@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Trip } from "@/types/trip";
 import type { Route } from "@/types/route";
+import { colorForRouteId } from "@/utils/routeColors";
 
 export type OpsEventType =
   | "trip_received"
@@ -26,6 +27,10 @@ export interface AssignmentFlight {
   to: [number, number];
   color: string;
   label: string;
+  /** Route the trip was assigned to — lets the map color/label the flight
+   * to visually connect it with that route's polyline. */
+  routeId?: string;
+  routeName?: string;
 }
 
 const MAX_EVENTS = 60;
@@ -90,19 +95,40 @@ export function useOpsEvents(
           }),
         );
 
-        // Flight line: trip pickup -> its pickup stop on the assigned route
-        if (trip.gps_start_lat != null && trip.gps_start_lon != null && route?.stops?.length) {
-          const target =
-            route.stops.find((s) => s.trip_id === id && s.stop_type === "pickup") ?? route.stops[0];
-          if (target.latitude != null && target.longitude != null) {
-            nextFlights.push({
-              id: `fl-${id}-${now}`,
-              from: [trip.gps_start_lat, trip.gps_start_lon],
-              to: [target.latitude, target.longitude],
-              color: "#5eead4",
-              label: id,
-            });
-          }
+        // Flight line: the trip's pickup stop -> its delivery stop on the
+        // assigned route (the actual legs the vehicle drives for this trip),
+        // falling back to the trip's own GPS corners when the stops aren't
+        // placed yet. Colored with the ROUTE's color so the flight visually
+        // points at the route the trip joined.
+        const pickupStop = route?.stops?.find((s) => s.trip_id === id && s.stop_type === "pickup");
+        const dropStop = route?.stops?.find((s) => s.trip_id === id && s.stop_type === "delivery");
+        let from: [number, number] | null = null;
+        let to: [number, number] | null = null;
+        if (
+          pickupStop?.latitude != null && pickupStop.longitude != null &&
+          dropStop?.latitude != null && dropStop.longitude != null
+        ) {
+          from = [pickupStop.latitude, pickupStop.longitude];
+          to = [dropStop.latitude, dropStop.longitude];
+        } else if (
+          trip.gps_start_lat != null && trip.gps_start_lon != null &&
+          trip.gps_end_lat != null && trip.gps_end_lon != null
+        ) {
+          from = [trip.gps_start_lat, trip.gps_start_lon];
+          to = [trip.gps_end_lat, trip.gps_end_lon];
+        }
+        if (from && to) {
+          nextFlights.push({
+            id: `fl-${id}-${now}`,
+            from,
+            to,
+            // Route color when the route row is in the poll; neutral teal
+            // fallback if it hasn't arrived yet.
+            color: route ? colorForRouteId(route.route_id) : "#5eead4",
+            label: id,
+            routeId: route?.route_id,
+            routeName: route ? (route.name ?? route.route_id.slice(0, 8)) : undefined,
+          });
         }
       }
     }
@@ -163,9 +189,10 @@ export function useOpsEvents(
       setEvents((prev) => [...nextEvents.reverse(), ...prev].slice(0, MAX_EVENTS));
     }
     if (nextFlights.length > 0) {
-      setFlights((prev) => [...prev, ...nextFlights].slice(-8));
+      setFlights((prev) => [...prev, ...nextFlights].slice(-12));
       const ids = new Set(nextFlights.map((f) => f.id));
-      setTimeout(() => setFlights((prev) => prev.filter((f) => !ids.has(f.id))), 4200);
+      // Keep in sync with the .flight-line CSS animation (flight-fade 8s).
+      setTimeout(() => setFlights((prev) => prev.filter((f) => !ids.has(f.id))), 8500);
     }
 
     if (!initializedRef.current) initializedRef.current = true;

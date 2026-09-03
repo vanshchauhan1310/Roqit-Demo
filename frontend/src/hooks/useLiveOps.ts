@@ -21,7 +21,9 @@ export function useIncomingTrips(pollMs = 4000) {
 export function useAllTripsLive(pollMs = 8000) {
   return useQuery<Trip[], Error>({
     queryKey: ["live-all-trips"],
-    queryFn: () => fetchTrips(0, 300),
+    // limit must exceed the largest expected trip count - a low cap silently
+    // clipped the "Trips today" KPI at a fixed-looking number.
+    queryFn: () => fetchTrips(0, 1000),
     refetchInterval: pollMs,
   });
 }
@@ -29,7 +31,12 @@ export function useAllTripsLive(pollMs = 8000) {
 export function useRoutesLive(pollMs = 8000) {
   return useQuery<Route[], Error>({
     queryKey: ["live-routes"],
-    queryFn: () => fetchRoutes(),
+    queryFn: async () => {
+      const allRoutes = await fetchRoutes();
+      // Only count active routes (planned, active, in-transit)
+      const ACTIVE_STATUSES = ["planned", "active", "in-transit"];
+      return allRoutes.filter((r) => ACTIVE_STATUSES.includes((r.status || "").toLowerCase()));
+    },
     refetchInterval: pollMs,
   });
 }

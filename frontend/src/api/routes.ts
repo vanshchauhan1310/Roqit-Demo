@@ -5,7 +5,11 @@ import type { LnsRun } from "@/types/lns";
 import type { RouteAssignPayload, RouteReorderPayload } from "@/types/route";
 
 export async function fetchRoutes(tripId?: string): Promise<Route[]> {
-  const { data } = await apiClient.get<Route[]>("/routes", { params: tripId ? { trip_id: tripId } : undefined });
+  // limit must exceed the largest expected fleet plan - the API defaults to
+  // 100, which silently clipped "Active routes" at exactly 100.
+  const { data } = await apiClient.get<Route[]>("/routes", {
+    params: { limit: 1000, ...(tripId ? { trip_id: tripId } : {}) },
+  });
   return data;
 }
 

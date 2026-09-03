@@ -4,6 +4,7 @@ Regret-k insertion prioritizes trips where the difference between
 best and k-th best insertion cost is highest.
 """
 
+import time
 from dataclasses import dataclass
 from typing import Optional
 from uuid import UUID
@@ -17,6 +18,40 @@ from app.models.driver import Driver
 from app.optimization.feasibility.engine import FeasibilityEngine, FeasibilityResult
 from app.optimization.scoring.cost_function import CostFunction, InsertionCostResult
 from app.optimization.greedy.insertion import GreedyInsertion, InsertionOption
+from app.optimization.state import _haversine_km, vehicle_active_load_kg
+from app.optimization.state import ACTIVE_STATUSES, _haversine_km, vehicle_active_load_kg
+
+class RepairTimeout(Exception):
+    """Raised when the LNS repair phase exceeds its wall-clock deadline.
+
+    The optimizer treats this as a benign "iteration rejected" signal: the
+    caller rolls the iteration back and stops the search, releasing the
+    writer funnel lock promptly instead of burning minutes of CPU (and
+    starving the trip-assignment / completion workers) inside one slow
+    regret-k insertion pass.
+    """
+
+
+# Cooperative deadline for the CURRENT repair phase (module-level because
+# the repair operators are shared singleton instances). Only one LNS run
+# executes at a time (guarded by the writer funnel lock), so a single
+# slot is safe.
+_repair_deadline: Optional[float] = None
+
+
+def set_repair_deadline(seconds: Optional[float]) -> None:
+    """Arm (seconds=float) or disarm (None) the repair deadline."""
+    global _repair_deadline
+    _repair_deadline = (time.monotonic() + seconds) if seconds is not None else None
+
+
+def _check_repair_deadline() -> None:
+    if _repair_deadline is not None and time.monotonic() > _repair_deadline:
+        raise RepairTimeout("LNS repair exceeded its wall-clock deadline")
+
+
+# Public alias for repair operators (greedy repair) to share the deadline.
+check_repair_deadline = _check_repair_deadline
 
 
 @dataclass
@@ -65,9 +100,30 @@ class RegretInsertion:
         # For each trip, find all feasible insertions across all routes
         trip_results: list[RegretInsertionResult] = []
 
+        # Prune the route candidate set up-front: completed / inactive routes
+        # never accept new stops (their driver HOS window has closed), and very
+        # large routes blow up the O(stops^2) regret sweep. At demo scale this
+        # cuts the candidate set from ~21 routes to ~11, shaving tens of seconds
+        # off the repair pass so the wall-clock deadline is no longer hit.
+        candidate_routes: list[Route] = [
+            r
+            for r in routes
+            if r.status is not None and r.status.lower() in ACTIVE_STATUSES
+            and len(r.stops or []) <= 30
+        ]
+        if not candidate_routes:
+            candidate_routes = routes
+
         for trip in trips:
-            result = self._find_all_insertions(db, trip, routes)
+            try:
+                _check_repair_deadline()
+            except RepairTimeout:
+                # Deadline expired between trips — stop re-scanning but keep
+                # the partial results so the optimizer can still evaluate.
+                break
+            result = self._find_all_insertions(db, trip, candidate_routes)
             trip_results.append(result)
+
 
         # Sort by regret value (descending) - highest regret first
         trip_results.sort(key=lambda r: r.regret_value, reverse=True)
@@ -98,8 +154,15 @@ class RegretInsertion:
             if not vehicle:
                 continue
 
-            # Find best insertions for this route
-            options = self._find_route_insertions(db, route, vehicle, trip)
+            try:
+                # Find best insertions for this route
+                options = self._find_route_insertions(db, route, vehicle, trip)
+            except RepairTimeout:
+                # Deadline expired mid-sweep — return whatever was found so far.
+                # The optimizer can still evaluate a partial candidate instead of
+                # discarding the entire repair (which caused it to abort after
+                # exactly 1 iteration every run).
+                break
             all_options.extend(options)
 
         # Sort by cost
@@ -128,9 +191,48 @@ class RegretInsertion:
         vehicle: Vehicle,
         trip: Trip,
     ) -> list[InsertionOption]:
-        """Find all feasible insertions for a trip in a specific route."""
+        """Find all feasible insertions for a trip in a specific route.
+
+        The position sweep below is O(stops^2) with a full feasibility
+        simulation per pair, so large routes dominate the repair cost. Two
+        cheap pre-filters keep the sweep off routes that cannot help:
+
+        - capacity: skip when the vehicle's remaining capacity cannot take
+          the trip's load at all (every pair would be infeasible anyway);
+        - distance: skip when the route's nearest stop is unrealistically
+          far from the trip origin (detour cost alone makes any insertion
+          the worst candidate; regret-k still has the other routes).
+
+        At demo scale (16 routes, ~40 stops each) these prunes cut the
+        repair phase from minutes to well inside its wall-clock deadline.
+        """
         current_stops = sorted(route.stops, key=lambda s: s.sequence)
         frozen_until = route.frozen_until_sequence or 0
+
+        # --- Pre-filter 1: vehicle capacity ---------------------------------
+        load = vehicle_active_load_kg(db, vehicle)
+        cap = vehicle.load_capacity_kg or 0.0
+        trip_load = trip.load_weight_kg or 0.0
+        if cap > 0 and (load + trip_load) > cap:
+            return []
+
+        # --- Pre-filter 2: distance sanity -----------------------------------
+        # Skip routes whose every stop is farther than PRUNE_DISTANCE_KM from
+        # the trip origin — inserting there can never be cost-competitive.
+        PRUNE_DISTANCE_KM = 150.0
+        if trip.gps_start_lat and trip.gps_start_lon:
+            near_enough = any(
+                s.latitude and s.longitude
+                and _haversine_km(trip.gps_start_lat, trip.gps_start_lon, s.latitude, s.longitude)
+                <= PRUNE_DISTANCE_KM
+                for s in current_stops
+            )
+            if not near_enough:
+                return []
+
+        # Driver is constant for the whole route — hoist the lookup out of
+        # the O(n^2) loop (it used to run once per position pair).
+        driver = db.get(Driver, route.driver_id) if route.driver_id else None
 
         options: list[InsertionOption] = []
 
@@ -138,14 +240,14 @@ class RegretInsertion:
         max_seq = len(current_stops) + 1
 
         for pickup_seq in range(min_pickup_seq, max_seq + 1):
+            _check_repair_deadline()
             for delivery_seq in range(pickup_seq + 1, max_seq + 2):
                 new_stops = self.greedy_insertion._insert_stops_at_position(
                     current_stops, trip, pickup_seq, delivery_seq
                 )
 
                 feasibility = self.feasibility_engine.check_route_feasibility(
-                    db, route, new_stops, trip, vehicle,
-                    db.get(Driver, route.driver_id) if route.driver_id else None
+                    db, route, new_stops, trip, vehicle, driver
                 )
 
                 if not feasibility.feasible:

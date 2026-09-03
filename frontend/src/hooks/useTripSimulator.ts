@@ -13,7 +13,8 @@ const STORAGE_KEY = "liveops-autofeed";
  */
 export function useTripSimulator() {
   const [enabled, setEnabledState] = useState<boolean>(() => {
-    return localStorage.getItem(STORAGE_KEY) !== "off";
+    // Default to OFF so LNS runs without competing writers. User can toggle ON.
+    return localStorage.getItem(STORAGE_KEY) === "on";
   });
   const [generated, setGenerated] = useState(0);
   const [nextTripInMs, setNextTripInMs] = useState<number>(INTERVAL_MS);

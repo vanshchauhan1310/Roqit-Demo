@@ -1,7 +1,7 @@
 """add delay_predictions table
 
 Revision ID: 1755ff316ef3
-Revises:
+Revises: 000000000000
 Create Date: 2026-07-29 16:11:26.127451
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 revision: str = '1755ff316ef3'
-down_revision: Union[str, None] = None
+down_revision: Union[str, None] = '000000000000'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

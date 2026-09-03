@@ -50,7 +50,10 @@ class GreedyRepair(RepairOperator):
     ) -> list[InsertionOption]:
         committed_options = []
 
+        from app.optimization.regret.insertion import check_repair_deadline
+
         for trip in destroy_result.removed_trips:
+            check_repair_deadline()
             result = self.greedy_insertion.assign_trip(db, trip)
             if result.success and result.insertion_option:
                 # Apply insertion

@@ -38,7 +38,11 @@ class Settings(BaseSettings):
     GREEDY_MAX_CANDIDATES: int = 50
     GREEDY_MAX_PICKUP_DISTANCE_KM: float = 50.0
     LNS_DESTROY_PERCENTAGE: float = 0.2
-    LNS_INTERVAL_MINUTES: int = 10
+    # Periodic LNS cadence. Kept SHORTER than the trip auto-completion delay
+    # (TRIP_COMPLETION_DELAY_MINUTES = 10) so the optimizer gets a chance to
+    # re-shuffle and insert queued trips BEFORE cargo completes and frees
+    # capacity — otherwise LNS would routinely wake up to an empty board.
+    LNS_INTERVAL_MINUTES: int = 5
     # Multi-iteration LNS search: each trigger runs up to LNS_MAX_ITERATIONS
     # destroy/repair cycles within LNS_ITERATION_BUDGET_SECONDS, keeping every
     # improvement (hill-climbing) and rolling back rejected candidates.

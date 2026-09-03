@@ -4,7 +4,8 @@ import L from "leaflet";
 import type { Trip } from "@/types/trip";
 import type { Route } from "@/types/route";
 import { HYDERABAD_CENTER, HYDERABAD_BOUNDS } from "@/utils/serviceArea";
-import { colorForRouteId } from "@/utils/routeColors";
+import { colorForRouteId, ROUTE_COLORS } from "@/utils/routeColors";
+import { useRoadRoutes } from "@/hooks/useRoadRoutes";
 import type { AssignmentFlight } from "@/hooks/useOpsEvents";
 
 /** Cache icon instances — react-leaflet replaces marker DOM whenever the
@@ -115,6 +116,23 @@ export function LiveOpsMap({ incomingTrips, routes, selectedRouteId, onSelectRou
   const showIncoming = view === "incoming";
   const showAssigned = view === "assigned";
 
+  // Road-following geometry for every route (presentation-only; optimization
+  // stays server-side). Fetched for ALL routes so selecting/deselecting never
+  // refetches, and reused for both the routes layer and flight-line endpoints.
+  const roadRequests = useMemo(
+    () =>
+      routes
+        .map((route) => ({
+          key: route.route_id,
+          positions: route.stops
+            .filter((s) => s.latitude != null && s.longitude != null)
+            .map((s) => [s.latitude as number, s.longitude as number] as [number, number]),
+        }))
+        .filter((r) => r.positions.length > 1),
+    [routes],
+  );
+  const { geometryByKey: roadGeometry, isLoading: roadLoading } = useRoadRoutes(roadRequests);
+
   return (
     <div className="relative rounded-xl border border-slate-700/60 overflow-hidden bg-slate-900 dark-map">
       <MapContainer
@@ -135,13 +153,18 @@ export function LiveOpsMap({ incomingTrips, routes, selectedRouteId, onSelectRou
         <FitBounds incoming={incomingTrips} selectedRoute={selectedRoute} />
         <RectangleBounds />
 
-        {/* Assignment flight-lines: animated trip -> route connection */}
+        {/* Assignment flight-lines: animated trip -> route connection.
+            Colored with the assigned route's color; tooltip names the route. */}
         {(showAssigned || showRoutes) && flights.map((f) => (
           <Polyline
             key={f.id}
             positions={[f.from, f.to]}
-            pathOptions={{ color: f.color, weight: 2.5, className: "flight-line" }}
-          />
+            pathOptions={{ color: f.color, weight: 3, className: "flight-line" }}
+          >
+            <Tooltip direction="top" offset={[0, -8]} sticky>
+              {`${f.label} → ${f.routeName ?? "route"}`}
+            </Tooltip>
+          </Polyline>
         ))}
 
         {showRoutes && visibleRoutes.map((route) => {
@@ -150,11 +173,20 @@ export function LiveOpsMap({ incomingTrips, routes, selectedRouteId, onSelectRou
             .map((s) => [s.latitude as number, s.longitude as number] as [number, number]);
           if (points.length === 0) return null;
           const color = colorForRouteId(route.route_id);
+          // Prefer road-following geometry; dashed straight line while OSRM
+          // is loading (or if it fails) so the shape is still visible.
+          const road = roadGeometry.get(route.route_id);
+          const line = road && road.length > 1 ? road : points;
           return (
             <div key={route.route_id}>
               <Polyline
-                positions={points}
-                pathOptions={{ color, weight: selectedRoute ? 4 : 2.5, opacity: 0.85 }}
+                positions={line}
+                pathOptions={{
+                  color,
+                  weight: selectedRoute ? 4 : 2.5,
+                  opacity: 0.85,
+                  dashArray: road && road.length > 1 ? undefined : "6 6",
+                }}
                 eventHandlers={{ click: () => onSelectRoute(route.route_id) }}
               />
               {route.stops.map((s, i) =>
@@ -227,11 +259,14 @@ export function LiveOpsMap({ incomingTrips, routes, selectedRouteId, onSelectRou
           <span className="ml-auto tnum">{flights.length}</span>
         </button>
         <button
-          onClick={() => setView("routes")}
+          onClick={() => { setView("routes"); onSelectRoute(null); }}
           className={`flex items-center gap-2 text-left ${view === "routes" ? "text-sky-300" : "hover:text-sky-300"}`}
-          title="Show all routes"
+          title="Show all routes (clears any route selection)"
         >
-          <span className="w-4 h-0.5" style={{ background: colorForRouteId(routes[0]?.route_id ?? "0") }} />
+          <span
+            className="w-4 h-0.5 rounded-full"
+            style={{ background: `linear-gradient(90deg, ${ROUTE_COLORS.join(", ")})` }}
+          />
           <span>Routes — one color each</span>
           <span className="ml-auto tnum">{routes.length}</span>
           {selectedRoute && ` · ${selectedRoute.name ?? selectedRoute.route_id.slice(0, 8)}`}
@@ -240,6 +275,9 @@ export function LiveOpsMap({ incomingTrips, routes, selectedRouteId, onSelectRou
           <button onClick={() => onSelectRoute(null)} className="mt-1 text-left text-teal-300 font-medium hover:underline">
             Show all routes
           </button>
+        )}
+        {showRoutes && roadLoading && (
+          <span className="mt-1 text-[10px] text-slate-500">loading road routes…</span>
         )}
       </div>
     </div>

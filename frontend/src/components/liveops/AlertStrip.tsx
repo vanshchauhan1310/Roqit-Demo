@@ -12,7 +12,7 @@ interface AlertStripProps {
   onOpenRoute: (routeId: string) => void;
 }
 
-export function AlertStrip({ incoming, allTrips, routes, lnsRuns, onOpenTrip, onOpenRoute }: AlertStripProps) {
+export function AlertStrip({ allTrips, routes, lnsRuns, onOpenTrip, onOpenRoute }: AlertStripProps) {
   const delayed = useMemo(() => allTrips.filter((t) => t.is_delayed === true), [allTrips]);
 
   const overCapacity = useMemo(
@@ -41,15 +41,8 @@ export function AlertStrip({ incoming, allTrips, routes, lnsRuns, onOpenTrip, on
     onClick?: () => void;
   }[] = [];
 
-  cards.push({
-    key: "queue",
-    tone: incoming.length > 0 ? "danger" : "ok",
-    label: "Incoming queue",
-    value: String(incoming.length),
-    sub: incoming.length > 0 ? "waiting for assignment" : "all trips assigned",
-    onClick: incoming.length > 0 ? () => onOpenTrip(incoming[0].trip_id) : undefined,
-  });
-
+  // "Incoming queue" and "Active routes" live in the KPI strip above — this
+  // strip only carries alerts that aren't already shown there.
   cards.push({
     key: "delayed",
     tone: delayed.length > 0 ? "warn" : "ok",
@@ -66,14 +59,6 @@ export function AlertStrip({ incoming, allTrips, routes, lnsRuns, onOpenTrip, on
     value: String(overCapacity.length),
     sub: overCapacity.length > 0 ? "routes near the limit" : "all routes healthy",
     onClick: overCapacity.length > 0 ? () => onOpenRoute(overCapacity[0].route_id) : undefined,
-  });
-
-  cards.push({
-    key: "routes",
-    tone: "info",
-    label: "Active routes",
-    value: String(routes.length),
-    sub: `${routes.reduce((a, r) => a + (r.stops?.length ?? 0), 0)} stops sequenced`,
   });
 
   cards.push({
@@ -108,7 +93,7 @@ export function AlertStrip({ incoming, allTrips, routes, lnsRuns, onOpenTrip, on
   };
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 mt-4">
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
       {cards.map((c) => (
         <button
           key={c.key}

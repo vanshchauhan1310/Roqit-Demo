@@ -97,6 +97,11 @@ function TripDetail({ tripId, onOpenRoute }: { tripId: string; onOpenRoute: (id:
     queryKey: ["liveops-trip", tripId],
     queryFn: () => fetchTrip(tripId),
     refetchInterval: 8000,
+    // Short retry window: without this a failing request retries 3x with
+    // exponential backoff, which reads as an endless "Loading trip...".
+    retry: 1,
+    retryDelay: 500,
+    staleTime: 5000,
   });
   if (isLoading) return <p className="text-sm text-gray-400 py-6 text-center">Loading trip…</p>;
   if (error || !trip) return <p className="text-sm text-red-500 py-6 text-center">Could not load trip details</p>;
@@ -108,6 +113,9 @@ function RouteDetail({ routeId, onOpenTrip }: { routeId: string; onOpenTrip: (id
     queryKey: ["liveops-route", routeId],
     queryFn: () => fetchRoute(routeId),
     refetchInterval: 8000,
+    retry: 1,
+    retryDelay: 500,
+    staleTime: 5000,
   });
   if (isLoading) return <p className="text-sm text-gray-400 py-6 text-center">Loading route…</p>;
   if (error || !route) return <p className="text-sm text-red-500 py-6 text-center">Could not load route details</p>;
