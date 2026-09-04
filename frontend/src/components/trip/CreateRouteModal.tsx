@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { isAxiosError } from "axios";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-<<<<<<< HEAD
 import { assignRoute, optimizeRouteOrder, reorderRouteStops } from "@/api/routes";
 import { useUnassignedTrips } from "@/hooks/useUnassignedTrips";
 import { useTrips } from "@/hooks/useTrips";
@@ -12,16 +11,6 @@ import { RouteMapPreview, type StopType } from "./RouteMapPreview";
 import type { Trip } from "@/types/trip";
 import type { DriverRosterItem, VehicleRosterItem } from "@/types/roster";
 import type { OptimizeStopInput, OptimizeVehicleInput } from "@/types/optimize";
-=======
-import { assignRoute, reorderRouteStops } from "@/api/routes";
-import { useUnassignedTrips } from "@/hooks/useUnassignedTrips";
-import { useDriverRoster } from "@/hooks/useDriverRoster";
-import { useVehicleRoster } from "@/hooks/useVehicleRoster";
-import { useRoadRoute } from "@/hooks/useRoadRoute";
-import { RouteMapPreview } from "./RouteMapPreview";
-import type { Trip } from "@/types/trip";
-import type { DriverRosterItem, VehicleRosterItem } from "@/types/roster";
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 import {
   IconAlertTriangle,
   IconArrowDown,
@@ -86,7 +75,6 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
   const [loads, setLoads] = useState<Record<string, TripLoad>>({});
   const [pickupDateTime, setPickupDateTime] = useState("");
   const [routeName, setRouteName] = useState("");
-<<<<<<< HEAD
   const [depot, setDepot] = useState<{ lat: number; lng: number; address: string } | null>(null);
 
   const queryClient = useQueryClient();
@@ -296,88 +284,6 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
     },
   });
 
-=======
-
-  const queryClient = useQueryClient();
-  const { data: trips, isLoading: tripsLoading } = useUnassignedTrips();
-  const { data: drivers, isLoading: driversLoading } = useDriverRoster();
-  const { data: vehicles, isLoading: vehiclesLoading } = useVehicleRoster();
-
-  const tripsById = useMemo(() => new Map((trips ?? []).map((t) => [t.trip_id, t])), [trips]);
-  const selectedDriver = drivers?.find((d) => d.driver_id === driverId) ?? null;
-  const selectedVehicle = vehicles?.find((v) => v.vehicle_id === vehicleId) ?? null;
-
-  const defaultStops = useMemo(() => buildDefaultStops(selectedTripIds), [selectedTripIds]);
-  const reordered = !sameOrder(stops, defaultStops);
-
-  const mapStops = useMemo(
-    () =>
-      stops
-        .map((stop, i) => {
-          const trip = tripsById.get(stop.tripId);
-          const lat = stop.stopType === "pickup" ? trip?.gps_start_lat : trip?.gps_end_lat;
-          const lng = stop.stopType === "pickup" ? trip?.gps_start_lon : trip?.gps_end_lon;
-          if (lat == null || lng == null) return null;
-          return {
-            key: `${stop.tripId}:${stop.stopType}`,
-            lat,
-            lng,
-            label: `${stop.stopType === "pickup" ? "Pickup" : "Delivery"} · ${trip?.trip_id ?? ""}`,
-            sequence: i + 1,
-          };
-        })
-        .filter((s): s is NonNullable<typeof s> => s !== null),
-    [stops, tripsById],
-  );
-
-  const roadRoute = useRoadRoute(mapStops.map((s) => [s.lat, s.lng] as [number, number]));
-
-  const totalLoadKg = selectedTripIds.reduce(
-    (sum, tripId) => sum + (Number(loads[tripId]?.weightKg) || 0),
-    0,
-  );
-  const exceedsCapacity =
-    selectedVehicle?.load_capacity_kg != null && totalLoadKg > selectedVehicle.load_capacity_kg;
-
-  const allWeightsEntered =
-    selectedTripIds.length > 0 &&
-    selectedTripIds.every((tripId) => (loads[tripId]?.weightKg ?? "").trim() !== "");
-
-  const mutation = useMutation({
-    mutationFn: async () => {
-      const route = await assignRoute({
-        trip_ids: selectedTripIds,
-        driver_id: driverId,
-        vehicle_id: vehicleId,
-        pickup_time: new Date(pickupDateTime).toISOString(),
-        name: routeName || null,
-        loads: selectedTripIds.map((tripId) => ({
-          trip_id: tripId,
-          load_weight_kg: loads[tripId]?.weightKg ? Number(loads[tripId].weightKg) : null,
-          load_value: loads[tripId]?.value ? Number(loads[tripId].value) : null,
-        })),
-      });
-
-      if (reordered) {
-        const byKey = new Map(route.stops.map((s) => [`${s.trip_id}:${s.stop_type}`, s.stop_id]));
-        const orderedStopIds = stops
-          .map((s) => byKey.get(`${s.tripId}:${s.stopType}`))
-          .filter((id): id is string => Boolean(id));
-        if (orderedStopIds.length === route.stops.length) {
-          await reorderRouteStops(route.route_id, { stop_ids: orderedStopIds });
-        }
-      }
-      return route;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["trips"] });
-      queryClient.invalidateQueries({ queryKey: ["trips", "unassigned"] });
-      queryClient.invalidateQueries({ queryKey: ["routes"] });
-      resetAndClose();
-    },
-  });
-
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
   if (!open) return null;
 
   const resetAndClose = () => {
@@ -393,10 +299,7 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
   };
 
   const toggleTrip = (tripId: string) => {
-<<<<<<< HEAD
     if (!unassignedTripIds.has(tripId) && !selectedTripIds.includes(tripId)) return; // already on a route
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
     setSelectedTripIds((prev) => {
       const next = prev.includes(tripId) ? prev.filter((id) => id !== tripId) : [...prev, tripId];
       setStops(buildDefaultStops(next));
@@ -430,7 +333,6 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
       : mutation.isError
         ? "Something went wrong assigning this route. Please try again."
         : null;
-<<<<<<< HEAD
 
   const optimizeErrorMessage =
     optimizeMutation.isError && isAxiosError(optimizeMutation.error) && typeof optimizeMutation.error.response?.data?.detail === "string"
@@ -438,8 +340,6 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
       : optimizeMutation.isError
         ? "Couldn't optimize the stop order. Try again."
         : null;
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -465,7 +365,6 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
                 trips={trips ?? []}
                 isLoading={tripsLoading}
                 selectedTripIds={selectedTripIds}
-<<<<<<< HEAD
                 unassignedTripIds={unassignedTripIds}
                 onToggleTrip={toggleTrip}
                 stops={stops}
@@ -475,11 +374,6 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
                 optimizeDisabled={stopsMissingCoordinates || stops.length < 4}
                 solverUsed={optimizeMutation.data?.solver_used ?? null}
                 optimizeErrorMessage={optimizeErrorMessage}
-=======
-                onToggleTrip={toggleTrip}
-                stops={stops}
-                onMoveStop={moveStop}
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
               />
             )}
             {step === 1 && (
@@ -496,11 +390,8 @@ export function CreateRouteModal({ open, onClose }: CreateRouteModalProps) {
                 isLoading={vehiclesLoading}
                 selectedVehicleId={vehicleId}
                 onSelectVehicle={setVehicleId}
-<<<<<<< HEAD
                 depot={depot}
                 onSelectDepot={setDepot}
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
               />
             )}
             {step === 3 && (
@@ -631,7 +522,6 @@ interface TripsStepProps {
   trips: Trip[];
   isLoading: boolean;
   selectedTripIds: string[];
-<<<<<<< HEAD
   unassignedTripIds: Set<string>;
   onToggleTrip: (tripId: string) => void;
   stops: StopPreview[];
@@ -657,39 +547,23 @@ function TripsStep({
   solverUsed,
   optimizeErrorMessage,
 }: TripsStepProps) {
-=======
-  onToggleTrip: (tripId: string) => void;
-  stops: StopPreview[];
-  onMoveStop: (index: number, direction: -1 | 1) => void;
-}
-
-function TripsStep({ trips, isLoading, selectedTripIds, onToggleTrip, stops, onMoveStop }: TripsStepProps) {
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
   return (
     <div className="space-y-5">
       <div>
         <label className="block text-sm font-semibold text-gray-900 mb-2">Select trips to group (min 2)</label>
         {isLoading && <p className="text-sm text-gray-400">Loading trips…</p>}
         {!isLoading && trips.length === 0 && (
-<<<<<<< HEAD
           <p className="text-sm text-gray-400">No trips available — create a trip first.</p>
-=======
-          <p className="text-sm text-gray-400">No unassigned trips available — create a trip first.</p>
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
         )}
         <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
           {trips.map((trip) => {
             const selected = selectedTripIds.includes(trip.trip_id);
-<<<<<<< HEAD
             const alreadyRouted = !unassignedTripIds.has(trip.trip_id) && !selected;
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
             return (
               <button
                 key={trip.trip_id}
                 type="button"
                 onClick={() => onToggleTrip(trip.trip_id)}
-<<<<<<< HEAD
                 disabled={alreadyRouted}
                 className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-lg border text-left transition-colors ${
                   selected
@@ -697,10 +571,6 @@ function TripsStep({ trips, isLoading, selectedTripIds, onToggleTrip, stops, onM
                     : alreadyRouted
                       ? "border-gray-100 bg-gray-50 opacity-60 cursor-not-allowed"
                       : "border-gray-200 hover:bg-gray-50"
-=======
-                className={`w-full flex items-center justify-between gap-3 px-4 py-3 rounded-lg border text-left transition-colors ${
-                  selected ? "border-teal-500 bg-teal-50" : "border-gray-200 hover:bg-gray-50"
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
                 }`}
               >
                 <div>
@@ -712,7 +582,6 @@ function TripsStep({ trips, isLoading, selectedTripIds, onToggleTrip, stops, onM
                     {trip.planned_distance_km != null ? ` · ${Math.round(trip.planned_distance_km)} km` : ""}
                   </div>
                 </div>
-<<<<<<< HEAD
                 <div className="flex items-center gap-2 shrink-0">
                   {alreadyRouted && (
                     <span className="px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 text-xs font-medium whitespace-nowrap">
@@ -727,15 +596,6 @@ function TripsStep({ trips, isLoading, selectedTripIds, onToggleTrip, stops, onM
                     <IconCheck />
                   </span>
                 </div>
-=======
-                <span
-                  className={`w-5 h-5 shrink-0 rounded border flex items-center justify-center ${
-                    selected ? "bg-teal-600 border-teal-600 text-white" : "border-gray-300 text-transparent"
-                  }`}
-                >
-                  <IconCheck />
-                </span>
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
               </button>
             );
           })}
@@ -744,7 +604,6 @@ function TripsStep({ trips, isLoading, selectedTripIds, onToggleTrip, stops, onM
 
       {stops.length >= 2 && (
         <div>
-<<<<<<< HEAD
           <div className="flex items-center justify-between gap-3 mb-2">
             <label className="block text-sm font-semibold text-gray-900">
               Stop sequence <span className="text-gray-400 font-normal">(reorder with arrows — a delivery can never precede its own pickup)</span>
@@ -766,11 +625,6 @@ function TripsStep({ trips, isLoading, selectedTripIds, onToggleTrip, stops, onM
             </p>
           )}
           {optimizeErrorMessage && <p className="text-xs text-red-600 mb-2">{optimizeErrorMessage}</p>}
-=======
-          <label className="block text-sm font-semibold text-gray-900 mb-2">
-            Stop sequence <span className="text-gray-400 font-normal">(reorder with arrows — a delivery can never precede its own pickup)</span>
-          </label>
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
           <div className="space-y-2">
             {stops.map((stop, index) => {
               const trip = trips.find((t) => t.trip_id === stop.tripId);
@@ -901,7 +755,6 @@ interface VehicleStepProps {
   isLoading: boolean;
   selectedVehicleId: string;
   onSelectVehicle: (id: string) => void;
-<<<<<<< HEAD
   depot: { lat: number; lng: number; address: string } | null;
   onSelectDepot: (depot: { lat: number; lng: number; address: string } | null) => void;
 }
@@ -933,11 +786,6 @@ function VehicleStep({ vehicles, isLoading, selectedVehicleId, onSelectVehicle, 
     setShowCustom(false);
   };
 
-=======
-}
-
-function VehicleStep({ vehicles, isLoading, selectedVehicleId, onSelectVehicle }: VehicleStepProps) {
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
   return (
     <div>
       <label className="block text-sm font-semibold text-gray-900 mb-2">Assign vehicle</label>
@@ -995,7 +843,6 @@ function VehicleStep({ vehicles, isLoading, selectedVehicleId, onSelectVehicle }
           );
         })}
       </div>
-<<<<<<< HEAD
 
       {/* Depot Selection */}
       <div className="mt-6">
@@ -1082,8 +929,6 @@ function VehicleStep({ vehicles, isLoading, selectedVehicleId, onSelectVehicle }
           </div>
         )}
       </div>
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
     </div>
   );
 }

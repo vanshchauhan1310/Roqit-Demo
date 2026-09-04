@@ -18,10 +18,7 @@ export function RouteDetailPage() {
   }, [route]);
 
   const { data: trip } = useTripDetail(firstTripId);
-<<<<<<< HEAD
   const hasLinkedTrips = Boolean(route && firstTripId);
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 
   return (
     <div>
@@ -47,7 +44,6 @@ export function RouteDetailPage() {
             <span>Vehicle {route.vehicle_id ?? "—"}</span>
           </div>
 
-<<<<<<< HEAD
           {!hasLinkedTrips && (
             <p className="text-sm text-gray-500">
               This route has no trips linked to its stops, so trip-scoped intelligence (route, vehicle, driver,
@@ -59,13 +55,6 @@ export function RouteDetailPage() {
           ) : (
             <p className="text-sm text-gray-500">Loading route intelligence…</p>
           ))}
-=======
-          {trip ? (
-            <RouteDetailTabs route={route} trip={trip} />
-          ) : (
-            <p className="text-sm text-gray-500">Loading route intelligence…</p>
-          )}
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
         </div>
       )}
     </div>

@@ -15,15 +15,11 @@ class Route(Base):
     name: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), default="planned")
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-<<<<<<< HEAD
     updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
     driver_id: Mapped[str | None] = mapped_column(String, ForeignKey("driver_master.driver_id"))
     vehicle_id: Mapped[str | None] = mapped_column(String, ForeignKey("vehicle_master.vehicle_id"))
     pickup_time: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
     planned_delivery_time: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
-<<<<<<< HEAD
 
     # Optimization fields
     version: Mapped[int] = mapped_column(Integer, default=0)
@@ -39,8 +35,6 @@ class Route(Base):
     route_score: Mapped[float | None] = mapped_column(Float)
     current_lat: Mapped[float | None] = mapped_column(Float)
     current_lon: Mapped[float | None] = mapped_column(Float)
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 
     stops: Mapped[list["RouteStop"]] = relationship(back_populates="route", order_by="RouteStop.sequence")
     driver: Mapped["Driver"] = relationship()

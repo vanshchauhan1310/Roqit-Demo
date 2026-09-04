@@ -27,12 +27,9 @@ export interface Route {
   vehicle_id: string | null;
   pickup_time: string | null;
   planned_delivery_time: string | null;
-<<<<<<< HEAD
   capacity_kg?: number | null;
   used_capacity_kg?: number | null;
   frozen_until_sequence?: number | null;
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 }
 
 export interface RouteStopInput {

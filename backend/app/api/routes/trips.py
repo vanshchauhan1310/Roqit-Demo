@@ -1,10 +1,6 @@
 from datetime import date
 
-<<<<<<< HEAD
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-=======
-from fastapi import APIRouter, Depends, HTTPException, Query
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -20,10 +16,7 @@ from app.services import (
     trip_service,
     vehicle_intelligence_service,
 )
-<<<<<<< HEAD
 from app.workers.trip_assignment_worker import create_trip_assignment_job
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
@@ -40,14 +33,11 @@ async def create_trip(trip_in: TripCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail=str(exc))
     except trip_service.LoadExceedsCapacityError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-<<<<<<< HEAD
 
     # Queue for async assignment
     create_trip_assignment_job(trip.trip_id)
 
     return TripReceived(trip_ref=trip.trip_id, status="RECEIVED")
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 
 
 @router.get("", response_model=list[TripRead])

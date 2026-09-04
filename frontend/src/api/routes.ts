@@ -1,11 +1,7 @@
 import { apiClient } from "./client";
 import type { AddRouteStopPayload, CreateRoutePayload, Route, RouteStop } from "@/types/route";
-<<<<<<< HEAD
 import type { OptimizeStopInput, OptimizeVehicleInput, CostWeightsInput, OptimizeRouteResponse } from "@/types/optimize";
 import type { LnsRun } from "@/types/lns";
-=======
-import type { OptimizeRouteResult, OptimizeStopInput } from "@/types/optimize";
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 import type { RouteAssignPayload, RouteReorderPayload } from "@/types/route";
 
 export async function fetchRoutes(tripId?: string): Promise<Route[]> {
@@ -14,11 +10,6 @@ export async function fetchRoutes(tripId?: string): Promise<Route[]> {
   const { data } = await apiClient.get<Route[]>("/routes", {
     params: { limit: 1000, ...(tripId ? { trip_id: tripId } : {}) },
   });
-  return data;
-}
-
-export async function fetchRoute(routeId: string): Promise<Route> {
-  const { data } = await apiClient.get<Route>(`/routes/${routeId}`);
   return data;
 }
 
@@ -57,16 +48,6 @@ export async function optimizeRouteOrder(
     solver_time_limit_seconds: solverTimeLimitSeconds,
     depot,
   });
-  return data;
-}
-
-export async function assignRoute(payload: RouteAssignPayload): Promise<Route> {
-  const { data } = await apiClient.post<Route>("/routes/assign", payload);
-  return data;
-}
-
-export async function reorderRouteStops(routeId: string, payload: RouteReorderPayload): Promise<Route> {
-  const { data } = await apiClient.patch<Route>(`/routes/${routeId}/stops/reorder`, payload);
   return data;
 }
 

@@ -4,7 +4,6 @@ import { TripsToolbar } from "@/components/trip/TripsToolbar";
 import { RoutesTable } from "@/components/trip/RoutesTable";
 import { CreateTripModal } from "@/components/trip/CreateTripModal";
 import { CreateRouteModal } from "@/components/trip/CreateRouteModal";
-<<<<<<< HEAD
 import { TripsTable } from "@/components/trip/TripsTable";
 import { IconPlus, IconRoute, IconInbox, IconTruck, IconMapPin } from "@/components/common/icons";
 import { useRoutes } from "@/hooks/useRoutes";
@@ -14,12 +13,6 @@ import type { Route } from "@/types/route";
 import type { Trip } from "@/types/trip";
 
 type ViewTab = "incoming" | "assignment" | "routes";
-=======
-import { IconPlus, IconRoute } from "@/components/common/icons";
-import { useRoutes } from "@/hooks/useRoutes";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import type { Route } from "@/types/route";
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 
 function routeMatches(route: Route, search: string, status: string, driver: string, pickupDate: string): boolean {
   const q = search.toLowerCase();
@@ -45,7 +38,6 @@ function routeMatches(route: Route, search: string, status: string, driver: stri
   }
   return true;
 }
-<<<<<<< HEAD
 
 function tripMatches(trip: Trip, search: string, status: string, driver: string, pickupDate: string): boolean {
   const q = search.toLowerCase();
@@ -71,16 +63,11 @@ function tripMatches(trip: Trip, search: string, status: string, driver: string,
   }
   return true;
 }
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 
 export function TripsPage() {
   const [createTripOpen, setCreateTripOpen] = useState(false);
   const [createRouteOpen, setCreateRouteOpen] = useState(false);
-<<<<<<< HEAD
   const [activeTab, setActiveTab] = useState<ViewTab>("incoming");
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 
   const [search, setSearch] = useState("");
   const [pickupDate, setPickupDate] = useState("");
@@ -89,7 +76,6 @@ export function TripsPage() {
 
   const debouncedSearch = useDebouncedValue(search);
 
-<<<<<<< HEAD
   const { data: routes, isLoading: routesLoading, isError: routesError } = useRoutes();
   const { data: incomingTrips, isLoading: incomingLoading, isError: incomingError } = useTrips(1, { unassigned: true });
   const { data: assignedTrips, isLoading: assignedLoading, isError: assignedError } = useTrips(1, {});
@@ -115,16 +101,6 @@ export function TripsPage() {
     return all.filter((t) => tripMatches(t, debouncedSearch, status, driver, pickupDate));
   }, [assignedTrips, debouncedSearch, status, driver, pickupDate]);
 
-=======
-  const { data: routes, isLoading, isError } = useRoutes();
-
-  const filteredRoutes = useMemo(() => {
-    const all = routes ?? [];
-    if (!debouncedSearch && !status && !driver && !pickupDate) return all;
-    return all.filter((r) => routeMatches(r, debouncedSearch, status, driver, pickupDate));
-  }, [routes, debouncedSearch, status, driver, pickupDate]);
-
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
   const statusOptions = useMemo(
     () => Array.from(new Set((routes ?? []).map((r) => r.status).filter((s): s is string => Boolean(s)))).sort(),
     [routes],
@@ -134,15 +110,12 @@ export function TripsPage() {
     () => Array.from(new Set((routes ?? []).map((r) => r.driver_id).filter((d): d is string => Boolean(d)))).sort(),
     [routes],
   );
-<<<<<<< HEAD
 
   const tabConfig: { key: ViewTab; label: string; icon: typeof IconInbox; count: number }[] = [
     { key: "incoming", label: "Incoming", icon: IconInbox, count: filteredIncomingTrips.length },
     { key: "assignment", label: "Assignment", icon: IconTruck, count: filteredAssignedTrips.length },
     { key: "routes", label: "Routes", icon: IconMapPin, count: filteredRoutes.length },
   ];
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
 
   return (
     <div className="space-y-6">
@@ -183,7 +156,6 @@ export function TripsPage() {
         driver={driver}
         onDriverChange={setDriver}
         driverOptions={driverOptions}
-<<<<<<< HEAD
         activeTab={activeTab}
         onTabChange={setActiveTab}
         tabs={tabConfig}
@@ -198,24 +170,10 @@ export function TripsPage() {
             <p className="text-sm text-gray-500">No incoming trips.</p>
           ) : (
             <TripsTable trips={filteredIncomingTrips} />
-=======
-      />
-
-      {isLoading && <p className="text-sm text-gray-500">Loading routes…</p>}
-      {isError && <p className="text-sm text-red-600">Failed to load routes.</p>}
-
-      {routes && (
-        <div className="space-y-3">
-          {filteredRoutes.length === 0 ? (
-            <p className="text-sm text-gray-500">No routes match these filters.</p>
-          ) : (
-            <RoutesTable routes={filteredRoutes} />
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
           )}
         </div>
       )}
 
-<<<<<<< HEAD
       {activeTab === "assignment" && assignedTrips && (
         <div className="space-y-3">
           {filteredAssignedTrips.length === 0 ? (
@@ -236,8 +194,6 @@ export function TripsPage() {
         </div>
       )}
 
-=======
->>>>>>> d6b0b72 (Added Complete Fleet Pack)
       <CreateTripModal open={createTripOpen} onClose={() => setCreateTripOpen(false)} />
       <CreateRouteModal open={createRouteOpen} onClose={() => setCreateRouteOpen(false)} />
     </div>
