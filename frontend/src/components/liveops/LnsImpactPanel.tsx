@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Marker, Polyline, CircleMarker, Tooltip, useMa
 import L from "leaflet";
 import { HYDERABAD_CENTER, HYDERABAD_BOUNDS } from "@/utils/serviceArea";
 import { colorForRouteId } from "@/utils/routeColors";
-import type { LnsRun, LnsPlanSnapshot, MovedTrip } from "@/types/lns";
+import type { LnsRun, LnsPlanSnapshot, LnsSnapshotStop, MovedTrip } from "@/types/lns";
 
 type ViewMode = "before" | "after" | "replay";
 
@@ -259,48 +259,276 @@ function MetricCell({ label, value, accent }: { label: string; value: string; ac
   );
 }
 
-interface RouteDiffRow {
+interface RoutePlanDiffRow {
   routeId: string;
   name: string;
   vehicleId: string | null;
-  stopsBefore: number;
-  stopsAfter: number;
+  beforeStops: LnsSnapshotStop[];
+  afterStops: LnsSnapshotStop[];
+  added: LnsSnapshotStop[]; // present in after, not in before
+  removed: LnsSnapshotStop[]; // present in before, not in after
+  movedIn: MovedTrip[]; // trips that joined this route
+  movedOut: MovedTrip[]; // trips that left this route
   state: "changed" | "unchanged" | "new" | "removed";
 }
 
-function buildDiff(run: LnsRun): RouteDiffRow[] {
+function stopKey(s: LnsSnapshotStop): string {
+  return `${s.trip_id ?? ""}:${s.stop_type}`;
+}
+
+/** Rich per-route diff: which stops/sequences changed and which trips moved. */
+function buildDetailedDiff(run: LnsRun): RoutePlanDiffRow[] {
   const before = run.routes_before ?? {};
   const after = run.routes_after ?? {};
+  const moved = computeMovedTrips(run);
+
+  // tripId -> routeId for pickup stops so we can attribute moved trips.
+  const beforeTripRoute = new Map<string, string>();
+  const afterTripRoute = new Map<string, string>();
+  for (const [routeId, r] of Object.entries(before)) {
+    for (const s of r.stops ?? []) {
+      if (s.trip_id && s.stop_type === "pickup") beforeTripRoute.set(s.trip_id, routeId);
+    }
+  }
+  for (const [routeId, r] of Object.entries(after)) {
+    for (const s of r.stops ?? []) {
+      if (s.trip_id && s.stop_type === "pickup") afterTripRoute.set(s.trip_id, routeId);
+    }
+  }
+
   const ids = Array.from(new Set([...Object.keys(before), ...Object.keys(after)]));
   return ids.map((routeId) => {
     const b = before[routeId];
     const a = after[routeId];
-    const stopsBefore = b?.stops?.length ?? 0;
-    const stopsAfter = a?.stops?.length ?? 0;
-    const state: RouteDiffRow["state"] = !b
+    const beforeStops = b?.stops ?? [];
+    const afterStops = a?.stops ?? [];
+
+    const bKeys = new Set(beforeStops.map(stopKey));
+    const aKeys = new Set(afterStops.map(stopKey));
+    const added = afterStops.filter((s) => !bKeys.has(stopKey(s)));
+    const removed = beforeStops.filter((s) => !aKeys.has(stopKey(s)));
+
+    const movedIn = moved.filter((m) => afterTripRoute.get(m.tripId) === routeId);
+    const movedOut = moved.filter((m) => beforeTripRoute.get(m.tripId) === routeId);
+
+    const seqBefore = beforeStops.map((s) => `${stopKey(s)}@${s.sequence}`).join("|");
+    const seqAfter = afterStops.map((s) => `${stopKey(s)}@${s.sequence}`).join("|");
+    const stopsDifferent =
+      added.length > 0 || removed.length > 0 || seqBefore !== seqAfter;
+
+    const state: RoutePlanDiffRow["state"] = !b
       ? "new"
       : !a
         ? "removed"
-        : JSON.stringify(b.stops) !== JSON.stringify(a.stops)
+        : stopsDifferent
           ? "changed"
           : "unchanged";
+
     return {
       routeId,
       name: (a ?? b)?.name ?? routeId.slice(0, 8),
       vehicleId: (a ?? b)?.vehicle_id ?? null,
-      stopsBefore,
-      stopsAfter,
+      beforeStops,
+      afterStops,
+      added,
+      removed,
+      movedIn,
+      movedOut,
       state,
     };
   });
 }
 
-const STATE_BADGE: Record<RouteDiffRow["state"], { label: string; cls: string }> = {
+const STATE_BADGE: Record<RoutePlanDiffRow["state"], { label: string; cls: string }> = {
   changed: { label: "rescheduled", cls: "bg-teal-500/15 text-teal-300 border-teal-500/40" },
   unchanged: { label: "unchanged", cls: "bg-slate-500/10 text-slate-400 border-slate-600/40" },
   new: { label: "opened", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40" },
   removed: { label: "closed", cls: "bg-rose-500/15 text-rose-300 border-rose-500/40" },
 };
+
+/** A single stop rendered as a chip: + added, − removed, grey kept. */
+function StopChip({ stop, change }: { stop: LnsSnapshotStop; change: "added" | "removed" | "kept" }) {
+  const cls =
+    change === "added"
+      ? "bg-emerald-500/20 border-emerald-500/60 text-emerald-200"
+      : change === "removed"
+        ? "bg-rose-500/20 border-rose-500/60 text-rose-300 line-through opacity-70"
+        : "bg-slate-800 border-slate-700 text-slate-300";
+  const tag = stop.stop_type === "pickup" ? "P" : stop.stop_type === "delivery" ? "D" : "W";
+  const marker = change === "added" ? "+" : change === "removed" ? "−" : "";
+  return (
+    <span
+      title={`#${stop.sequence} ${stop.stop_type}${stop.trip_id ? ` — ${stop.trip_id}` : ""}`}
+      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] font-semibold tnum ${cls}`}
+    >
+      <span>{marker}{tag}</span>
+      <span className="opacity-70">{stop.sequence}</span>
+    </span>
+  );
+}
+
+/** Merged, sequence-ordered chips for a route: after-plan order with removed stops appended. */
+function planChips(row: RoutePlanDiffRow): { stop: LnsSnapshotStop; change: "added" | "removed" | "kept" }[] {
+  const aKeys = new Set(row.afterStops.map(stopKey));
+  const bKeys = new Set(row.beforeStops.map(stopKey));
+  const chips: { stop: LnsSnapshotStop; change: "added" | "removed" | "kept" }[] = row.afterStops.map(
+    (s) => ({ stop: s, change: bKeys.has(stopKey(s)) ? "kept" : "added" }),
+  );
+  for (const s of row.beforeStops) {
+    if (!aKeys.has(stopKey(s))) chips.push({ stop: s, change: "removed" });
+  }
+  chips.sort((x, y) => {
+    const xs = x.change === "removed" ? 9999 : x.stop.sequence ?? 0;
+    const ys = y.change === "removed" ? 9999 : y.stop.sequence ?? 0;
+    return xs - ys;
+  });
+  return chips;
+}
+
+/** Expandable per-route rows with a stop-level before/after diff. */
+function RoutePlanDiff({ rows }: { rows: RoutePlanDiffRow[] }) {
+  const changedIds = useMemo(
+    () => new Set(rows.filter((r) => r.state !== "unchanged").map((r) => r.routeId)),
+    [rows],
+  );
+  const [expanded, setExpanded] = useState<Set<string>>(changedIds);
+  useEffect(() => setExpanded(changedIds), [changedIds]);
+
+  const toggle = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  return (
+    <div className="space-y-1.5">
+      {rows.map((row) => {
+        const isOpen = expanded.has(row.routeId);
+        const chips = planChips(row);
+        const moved = row.movedIn.length + row.movedOut.length;
+        return (
+          <div key={row.routeId} className="rounded-lg border border-slate-800 overflow-hidden bg-slate-950/60">
+            <button
+              onClick={() => toggle(row.routeId)}
+              className="w-full flex items-center justify-between gap-2 px-3 py-2 hover:bg-slate-900/60 text-left"
+            >
+              <span className="flex items-center gap-2 min-w-0">
+                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: colorForRouteId(row.routeId) }} />
+                <span className="text-xs font-semibold text-slate-200 truncate">{row.name}</span>
+                <span className="text-[9px] text-slate-500 tnum shrink-0">{row.vehicleId ?? "—"}</span>
+              </span>
+              <span className="flex items-center gap-2 shrink-0">
+                <span className="text-[10px] tnum text-slate-500">
+                  {row.beforeStops.length} → {row.afterStops.length}
+                </span>
+                {row.removed.length > 0 && (
+                  <span className="text-[10px] font-bold text-rose-400">−{row.removed.length}</span>
+                )}
+                {row.added.length > 0 && (
+                  <span className="text-[10px] font-bold text-emerald-400">+{row.added.length}</span>
+                )}
+                {moved > 0 && <span className="text-[10px] font-bold text-amber-300">⇄{moved}</span>}
+                <span className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${STATE_BADGE[row.state].cls}`}>
+                  {STATE_BADGE[row.state].label}
+                </span>
+                <span className="text-slate-600 text-xs w-3 text-center">{isOpen ? "−" : "+"}</span>
+              </span>
+            </button>
+
+            {isOpen && (
+              <div className="px-3 py-2.5 border-t border-slate-800 space-y-2">
+                {moved > 0 && (
+                  <div className="space-y-0.5 text-[10px]">
+                    {row.movedOut.map((m) => (
+                      <div key={`o-${m.tripId}`} className="flex items-center gap-1.5 text-rose-300">
+                        <span>⇡</span>
+                        <span className="tnum">{m.tripId}</span>
+                        <span className="text-rose-300/70">left this route</span>
+                      </div>
+                    ))}
+                    {row.movedIn.map((m) => (
+                      <div key={`i-${m.tripId}`} className="flex items-center gap-1.5 text-emerald-300">
+                        <span>⇣</span>
+                        <span className="tnum">{m.tripId}</span>
+                        <span className="text-emerald-300/70">joined this route</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-1">
+                  {chips.map((c, i) => (
+                    <StopChip key={`${c.stop.stop_id}-${i}`} stop={c.stop} change={c.change} />
+                  ))}
+                </div>
+                <p className="text-[9px] text-slate-600 pt-1 border-t border-slate-800/60">
+                  <span className="text-emerald-400">+</span> added · <span className="text-rose-400">−</span> removed · grey = unchanged · P pickup · D delivery
+                </p>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Plain-language "what happened" summary at the top of the panel. */
+function WhatChangedSection({
+  movedRows,
+  routeChangeLines,
+}: {
+  movedRows: { tripId: string; fromLabel: string; toLabel: string }[];
+  routeChangeLines: string[];
+}) {
+  if (movedRows.length === 0 && routeChangeLines.length === 0) {
+    return (
+      <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-xs text-slate-500">
+        No trips were moved and no route plans changed — the optimizer kept the existing plan.
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-slate-800 overflow-hidden">
+      <div className="px-3 py-2 bg-slate-900/80 border-b border-slate-800 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
+        What changed
+      </div>
+      <div className="divide-y divide-slate-800/70 bg-slate-950/40">
+        {movedRows.length > 0 && (
+          <div className="px-3 py-2">
+            <div className="text-[9px] uppercase tracking-[0.12em] text-slate-600 mb-1">
+              Trips moved between routes ({movedRows.length})
+            </div>
+            <div className="space-y-1">
+              {movedRows.map((m) => (
+                <div key={m.tripId} className="flex items-center gap-2 text-[11px]">
+                  <span className="text-amber-300">⇄</span>
+                  <span className="tnum font-semibold text-slate-200">{m.tripId}</span>
+                  <span className="text-slate-500">{m.fromLabel}</span>
+                  <span className="text-slate-600">→</span>
+                  <span className="text-slate-200">{m.toLabel}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {routeChangeLines.length > 0 && (
+          <div className="px-3 py-2">
+            <div className="text-[9px] uppercase tracking-[0.12em] text-slate-600 mb-1">
+              Route plan changes ({routeChangeLines.length})
+            </div>
+            <div className="space-y-1">
+              {routeChangeLines.map((ln, i) => (
+                <div key={i} className="text-[11px] text-slate-400">{ln}</div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function LnsImpactPanel({
   open,
@@ -329,8 +557,8 @@ export function LnsImpactPanel({
 
   const run = runs.find((r) => r.run_id === selectedRunId) ?? runs[0] ?? null;
   const accepted = run?.status === "completed";
-  const movedCount = useMemo(() => (run ? computeMovedTrips(run).length : 0), [run]);
-  const diff = useMemo(() => (run ? buildDiff(run) : []), [run]);
+  const movedTrips = useMemo(() => (run ? computeMovedTrips(run) : []), [run]);
+  const detailed = useMemo(() => (run ? buildDetailedDiff(run) : []), [run]);
 
   const selectRun = (id: string) => {
     setSelectedRunId(id);
@@ -404,8 +632,8 @@ export function LnsImpactPanel({
           <PanelBody
             run={run}
             accepted={accepted}
-            movedCount={movedCount}
-            diff={diff}
+            movedTrips={movedTrips}
+            detailed={detailed}
             mode={mode}
             replayNonce={replayNonce}
             onReplay={replay}
@@ -424,8 +652,8 @@ export function LnsImpactPanel({
 function PanelBody({
   run,
   accepted,
-  movedCount,
-  diff,
+  movedTrips,
+  detailed,
   mode,
   replayNonce,
   onReplay,
@@ -433,13 +661,55 @@ function PanelBody({
 }: {
   run: LnsRun;
   accepted: boolean;
-  movedCount: number;
-  diff: RouteDiffRow[];
+  movedTrips: MovedTrip[];
+  detailed: RoutePlanDiffRow[];
   mode: ViewMode;
   replayNonce: number;
   onReplay: () => void;
   setMode: (m: ViewMode) => void;
 }) {
+  const routeNames = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const [rid, r] of Object.entries(run.routes_before ?? {})) names.set(rid, r.name ?? rid.slice(0, 8));
+    for (const [rid, r] of Object.entries(run.routes_after ?? {})) names.set(rid, r.name ?? rid.slice(0, 8));
+    return names;
+  }, [run]);
+
+  const beforeTripRoute = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [rid, r] of Object.entries(run.routes_before ?? {})) {
+      for (const s of r.stops ?? []) if (s.trip_id && s.stop_type === "pickup") map.set(s.trip_id, rid);
+    }
+    return map;
+  }, [run]);
+
+  const afterTripRoute = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [rid, r] of Object.entries(run.routes_after ?? {})) {
+      for (const s of r.stops ?? []) if (s.trip_id && s.stop_type === "pickup") map.set(s.trip_id, rid);
+    }
+    return map;
+  }, [run]);
+
+  const movedRows = movedTrips.map((m) => ({
+    tripId: m.tripId,
+    fromLabel: routeNames.get(beforeTripRoute.get(m.tripId) ?? "") ?? "…",
+    toLabel: routeNames.get(afterTripRoute.get(m.tripId) ?? "") ?? "…",
+  }));
+
+  const routeChangeLines = detailed
+    .filter((r) => r.state === "changed")
+    .map((r) => {
+      const parts: string[] = [];
+      if (r.added.length) parts.push(`+${r.added.length} stop${r.added.length === 1 ? "" : "s"}`);
+      if (r.removed.length) parts.push(`−${r.removed.length} stop${r.removed.length === 1 ? "" : "s"}`);
+      if (r.movedOut.length) parts.push(`${r.movedOut.length} trip${r.movedOut.length === 1 ? "" : "s"} left`);
+      if (r.movedIn.length) parts.push(`${r.movedIn.length} trip${r.movedIn.length === 1 ? "" : "s"} joined`);
+      return `${r.name}: ${parts.join(" · ")}`;
+    });
+
+  const changedRouteCount = detailed.filter((r) => r.state !== "unchanged").length;
+
   return (
     <div className="flex-1 overflow-y-auto ops-scroll px-5 py-4 space-y-4">
       {/* Verdict */}
@@ -469,7 +739,8 @@ function PanelBody({
         </div>
         <div className="text-[10px] text-slate-500 mt-1">
           {run.run_type === "TRIGGERED_LNS" ? "manual trigger" : "automatic periodic run"} · destroy:{" "}
-          {run.destroy_strategy ?? "—"} · repair: {run.repair_strategy ?? "—"} · {run.execution_time_ms} ms ·{" "}
+          {run.destroy_strategy ?? "—"} · repair: {run.repair_strategy ?? "—"} ·{" "}
+          {(run.execution_time_ms / 1000).toFixed(1)}s ·{" "}
           {run.created_at ? new Date(run.created_at).toLocaleTimeString() : "—"}
         </div>
       </div>
@@ -482,9 +753,12 @@ function PanelBody({
           value={run.new_cost != null ? run.new_cost.toFixed(1) : "—"}
           accent={accepted ? "text-teal-300" : undefined}
         />
-        <MetricCell label="Routes touched" value={String(run.routes_affected)} />
-        <MetricCell label="Trips moved" value={String(movedCount)} />
+        <MetricCell label="Routes touched" value={String(changedRouteCount)} />
+        <MetricCell label="Trips moved" value={String(movedTrips.length)} />
       </div>
+
+      {/* What changed */}
+      <WhatChangedSection movedRows={movedRows} routeChangeLines={routeChangeLines} />
 
       {/* Map with mode toggle */}
       <div>
@@ -511,60 +785,12 @@ function PanelBody({
         <ImpactMap run={run} mode={mode} replayNonce={replayNonce} />
       </div>
 
-      {/* Per-route diff */}
+      {/* Per-route plan diff */}
       <div>
         <h3 className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 mb-2">
-          Route-by-route comparison
+          Route plans — before / after ({detailed.length} routes)
         </h3>
-        <div className="rounded-lg border border-slate-800 overflow-hidden">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="bg-slate-900 text-slate-500 text-[9px] uppercase tracking-[0.12em]">
-                <th className="text-left px-3 py-2 font-medium">Route</th>
-                <th className="text-left px-3 py-2 font-medium">Vehicle</th>
-                <th className="text-center px-3 py-2 font-medium">Before</th>
-                <th className="text-center px-3 py-2 font-medium">After</th>
-                <th className="text-right px-3 py-2 font-medium">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/70">
-              {diff.map((row) => (
-                <tr key={row.routeId} className="bg-slate-950/60">
-                  <td className="px-3 py-2">
-                    <span className="flex items-center gap-2">
-                      <span
-                        className="w-2.5 h-2.5 rounded-full shrink-0"
-                        style={{ background: colorForRouteId(row.routeId) }}
-                      />
-                      <span className="text-slate-200">{row.name ?? row.routeId.slice(0, 8)}</span>
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 tnum text-slate-400">{row.vehicleId ?? "—"}</td>
-                  <td className="px-3 py-2 text-center tnum text-slate-400">{row.stopsBefore}</td>
-                  <td className="px-3 py-2 text-center tnum text-slate-200">
-                    {row.stopsAfter}
-                    {row.stopsAfter !== row.stopsBefore && (
-                      <span className={row.stopsAfter > row.stopsBefore ? "text-teal-400" : "text-rose-400"}>
-                        {" "}
-                        ({row.stopsAfter > row.stopsBefore ? "+" : ""}
-                        {row.stopsAfter - row.stopsBefore})
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    <span
-                      className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
-                        STATE_BADGE[row.state].cls
-                      }`}
-                    >
-                      {STATE_BADGE[row.state].label}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <RoutePlanDiff rows={detailed} />
       </div>
     </div>
   );
