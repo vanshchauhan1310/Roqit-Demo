@@ -65,7 +65,11 @@ services:
       ML_SERVICE_URL: http://ml:8001
       BACKEND_CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
     env_file:
-      - ./backend/.env.local   # supplies OPENWEATHER_API_KEY etc.; DB/Redis/ML URLs above take precedence
+      # Optional: supplies OPENWEATHER_API_KEY etc.; DB/Redis/ML URLs above take
+      # precedence. Create backend/.env.local if you want weather-adjusted ETA
+      # inside Docker; the stack runs fine without it.
+      - path: ./backend/.env.local
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
