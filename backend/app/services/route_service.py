@@ -7,10 +7,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.route import Route, RouteStop
+from app.models.driver import Driver
 from app.models.trip import RESOLVED_STATUSES, Trip
 from app.models.vehicle import Vehicle
 from app.models.realtime_fleet_status import RealtimeFleetStatus
-from app.schemas.route import RouteCreate, RouteStopCreate, RouteAssignRequest, TripLoadInput
+from app.schemas.route import RouteCreate, RouteStopCreate, RouteAssignRequest, TripLoadInput, FleetPlanCreateRequest
 from app.services.eta_service import WEATHER_ETA_MULTIPLIERS
 from app.services.geocode_client import geocode_address
 from app.services.osrm_client import get_route_duration_hours
@@ -39,6 +40,14 @@ class StopSetMismatchError(ValueError):
 
 
 class LoadExceedsVehicleCapacityError(ValueError):
+    pass
+
+
+class DriverUnavailableError(ValueError):
+    pass
+
+
+class VehicleUnavailableError(ValueError):
     pass
 
 
@@ -472,3 +481,107 @@ def reorder_stops(db: Session, route: Route, stop_ids: List[uuid.UUID]) -> Route
         db.add(stop)
     db.commit()
     return route
+
+
+def create_fleet_plan_routes(db: Session, plan: FleetPlanCreateRequest) -> list[Route]:
+    """Persist reviewed, unsplit optimizer routes atomically."""
+    if not plan.routes:
+        raise ValueError("A fleet plan needs at least one non-empty route")
+
+    all_trip_ids = [stop.trip_id for route in plan.routes for stop in route.stops]
+    trips = db.query(Trip).filter(Trip.trip_id.in_(set(all_trip_ids))).all()
+    trips_by_id = {trip.trip_id: trip for trip in trips}
+    missing = sorted(set(all_trip_ids) - set(trips_by_id))
+    if missing:
+        raise TripNotFoundError(f"Trip(s) not found: {', '.join(missing)}")
+
+    seen_trip_ids: set[str] = set()
+    persisted: list[Route] = []
+    try:
+        for route_in in plan.routes:
+            if not route_in.stops:
+                raise ValueError(f"Vehicle {route_in.vehicle_id} has no stops")
+            if not route_in.driver_id:
+                raise DriverUnavailableError(
+                    f"DRIVER_UNAVAILABLE: vehicle {route_in.vehicle_id} needs an assigned driver"
+                )
+            by_trip: dict[str, list[str]] = {}
+            for stop in route_in.stops:
+                by_trip.setdefault(stop.trip_id, []).append(stop.stop_type)
+            for trip_id, types in by_trip.items():
+                if trip_id in seen_trip_ids:
+                    raise ValueError(f"Trip {trip_id} appears in more than one vehicle route")
+                if types.count("pickup") != 1 or types.count("delivery") != 1 or len(types) != 2:
+                    raise ValueError(f"Trip {trip_id} must have exactly one pickup and one delivery")
+                if types.index("pickup") > types.index("delivery"):
+                    raise PrecedenceViolationError(trip_id)
+                seen_trip_ids.add(trip_id)
+
+            vehicle = db.get(Vehicle, route_in.vehicle_id)
+            if vehicle is None:
+                raise ValueError(f"Vehicle {route_in.vehicle_id} not found")
+            if (vehicle.status or "").lower() in {"maintenance", "retired", "inactive", "unavailable", "out-of-service"}:
+                raise VehicleUnavailableError(f"VEHICLE_UNAVAILABLE: vehicle {route_in.vehicle_id} is unavailable")
+            if db.query(Route.route_id).filter(
+                Route.vehicle_id == route_in.vehicle_id,
+                func.lower(Route.status).in_(_AUTO_ROUTE_STATUSES),
+            ).first():
+                raise VehicleUnavailableError(
+                    f"VEHICLE_UNAVAILABLE: vehicle {route_in.vehicle_id} already has an active route"
+                )
+            driver = db.get(Driver, route_in.driver_id)
+            if driver is None or (driver.status or "").lower() in {"off-duty", "inactive", "unavailable", "suspended"}:
+                raise DriverUnavailableError(f"DRIVER_UNAVAILABLE: driver {route_in.driver_id} is unavailable")
+            if db.query(Route.route_id).filter(
+                Route.driver_id == route_in.driver_id,
+                func.lower(Route.status).in_(_AUTO_ROUTE_STATUSES),
+            ).first():
+                raise DriverUnavailableError(
+                    f"DRIVER_UNAVAILABLE: driver {route_in.driver_id} already has an active route"
+                )
+            if vehicle.load_capacity_kg is not None:
+                running_load_kg = 0.0
+                peak_load_kg = 0.0
+                for stop_in in route_in.stops:
+                    weight_kg = trips_by_id[stop_in.trip_id].load_weight_kg or 0.0
+                    running_load_kg += weight_kg if stop_in.stop_type == "pickup" else -weight_kg
+                    peak_load_kg = max(peak_load_kg, running_load_kg)
+                if peak_load_kg > vehicle.load_capacity_kg:
+                    raise LoadExceedsVehicleCapacityError(
+                        f"This stop order carries {peak_load_kg} kg at once, exceeding vehicle "
+                        f"{route_in.vehicle_id}'s capacity of {vehicle.load_capacity_kg} kg"
+                    )
+            route = Route(
+                trip_id=next(iter(by_trip)) if len(by_trip) == 1 else None,
+                name=route_in.name or f"Fleet route - {route_in.vehicle_id}",
+                driver_id=route_in.driver_id,
+                vehicle_id=route_in.vehicle_id,
+                pickup_time=plan.pickup_time,
+            )
+            db.add(route)
+            db.flush()
+            for sequence, stop_in in enumerate(route_in.stops, start=1):
+                trip = trips_by_id[stop_in.trip_id]
+                pickup = stop_in.stop_type == "pickup"
+                db.add(RouteStop(
+                    route_id=route.route_id, trip_id=trip.trip_id, sequence=sequence,
+                    stop_type=stop_in.stop_type, address=trip.origin if pickup else trip.destination,
+                    latitude=trip.gps_start_lat if pickup else trip.gps_end_lat,
+                    longitude=trip.gps_start_lon if pickup else trip.gps_end_lon,
+                ))
+            for trip_id in by_trip:
+                trip = trips_by_id[trip_id]
+                trip.driver_id = route_in.driver_id
+                trip.vehicle_id = route_in.vehicle_id
+                trip.pickup_time = plan.pickup_time
+                if vehicle.vehicle_type:
+                    trip.vehicle_type = vehicle.vehicle_type
+                db.add(trip)
+            persisted.append(route)
+        db.commit()
+        for route in persisted:
+            db.refresh(route)
+        return persisted
+    except Exception:
+        db.rollback()
+        raise

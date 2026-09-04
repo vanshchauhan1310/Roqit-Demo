@@ -84,3 +84,25 @@ class RouteRead(RouteBase):
     capacity_kg: float | None = None
     used_capacity_kg: float | None = None
     frozen_until_sequence: int | None = None
+
+
+class FleetRouteStopCreate(BaseModel):
+    trip_id: str
+    stop_type: str
+
+
+class FleetRouteCreate(BaseModel):
+    vehicle_id: str
+    driver_id: str | None = None
+    name: str | None = None
+    stops: List[FleetRouteStopCreate]
+
+
+class FleetPlanCreateRequest(BaseModel):
+    """Reviewed optimizer routes to store as dispatch routes.
+
+    Split-load jobs are intentionally excluded until shipment parts have their
+    own database model.
+    """
+    pickup_time: datetime
+    routes: List[FleetRouteCreate]
