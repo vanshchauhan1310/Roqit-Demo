@@ -56,6 +56,21 @@ class LoadExceedsCapacityError(ValueError):
     pass
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """Normalize a datetime to aware UTC.
+
+    Postgres/Supabase stores ``timestamptz`` and psycopg2 returns aware
+    datetimes, but a schema created from our models (``DateTime`` without
+    ``timezone=True``) stores naive ``timestamp`` values. Comparing the two
+    raises ``TypeError: can't compare offset-naive and offset-aware``, which
+    surfaces as a 500 on any trip/route read. This helper makes the comparison
+    side safe either way (see README2 §7.3).
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _apply_auto_status_transition(trip: Trip, now: datetime) -> bool:
     """Advances Scheduled -> In-Transit -> Delivered based on pickup_time/actual_delivery_time vs now.
 
@@ -65,11 +80,11 @@ def _apply_auto_status_transition(trip: Trip, now: datetime) -> bool:
     if not trip.status or trip.status.lower() not in _AUTO_TRANSITION_STATUSES:
         return False
 
-    if trip.actual_delivery_time and now >= trip.actual_delivery_time:
+    if trip.actual_delivery_time and now >= _as_utc(trip.actual_delivery_time):
         if trip.status != "Delivered":
             trip.status = "Delivered"
             return True
-    elif trip.pickup_time and now >= trip.pickup_time:
+    elif trip.pickup_time and now >= _as_utc(trip.pickup_time):
         if trip.status != "In-Transit":
             trip.status = "In-Transit"
             return True

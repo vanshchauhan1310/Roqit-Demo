@@ -56,6 +56,13 @@ class VehicleUnavailableError(ValueError):
 _AUTO_ROUTE_STATUSES = {"planned", "scheduled", "in-transit"}
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """Normalize a datetime to aware UTC (see README2 §7.3)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _apply_auto_status_transition(route: Route, now: datetime) -> bool:
     """Advances the route to In-Transit once its pickup_time has passed.
 
@@ -64,7 +71,7 @@ def _apply_auto_status_transition(route: Route, now: datetime) -> bool:
     """
     if not route.status or route.status.lower() not in _AUTO_ROUTE_STATUSES:
         return False
-    if route.pickup_time and now >= route.pickup_time:
+    if route.pickup_time and now >= _as_utc(route.pickup_time):
         if route.status != "in-transit":
             route.status = "in-transit"
             return True
@@ -81,7 +88,7 @@ def _apply_auto_stop_transitions(route: Route, now: datetime) -> bool:
     for stop in route.stops:
         if stop.status != "pending":
             continue
-        if stop.eta and now >= stop.eta:
+        if stop.eta and now >= _as_utc(stop.eta):
             stop.status = "done"
             changed = True
     return changed
