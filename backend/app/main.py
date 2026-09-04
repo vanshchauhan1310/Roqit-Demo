@@ -4,7 +4,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import trips, routes, vehicles, drivers, realtime, reports, geocode, roster, predictions
+from app.api.routes import trips, routes, vehicles, drivers, realtime, reports, geocode, roster, predictions, weather
 from app.core.config import settings
 from app.workers.supervisor import supervisor
 
@@ -53,3 +53,4 @@ app.include_router(geocode.router, prefix="/api")
 app.include_router(roster.router, prefix="/api")
 app.include_router(predictions.router, prefix="/api")
 app.include_router(predictions.expected_delay_router, prefix="/api")
+app.include_router(weather.router, prefix="/api")
