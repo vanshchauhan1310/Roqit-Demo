@@ -28,6 +28,38 @@ async def predict_delay_for_trip(trip_id: str, db: Session = Depends(get_db)):
     return await _run_pipeline(db, trip)
 
 
+@router.post("/fleet")
+def predict_delay_for_fleet():
+    """On-demand fleet-wide prediction sweep: re-predicts every ACTIVE trip
+    (route assigned, not yet delivered) across ALL routes, up to
+    PREDICTION_MAX_TRIPS_PER_RUN per pass. The same code path the 3-trip milestone
+    trigger uses - useful right after seeding/backfilling data, when you want
+    100% coverage immediately instead of waiting for the next completion
+    milestone.
+
+    Sync def on purpose: the helper calls asyncio.run() per trip internally,
+    which requires a thread without a running event loop (FastAPI runs sync
+    endpoints in a threadpool). Returns {predicted, skipped_failed}.
+    """
+    from app.workers.trip_completion_worker import (
+        PREDICTION_MAX_TRIPS_PER_RUN,
+        _repredict_route_trips,
+    )
+
+    done: set[str] = set()
+    predicted = failed = 0
+    while True:
+        pass_predicted, pass_failed = _repredict_route_trips(exclude_ids=done)
+        predicted += pass_predicted
+        failed += pass_failed
+        # Each pass pulls at most PREDICTION_MAX_TRIPS_PER_RUN trips; when a
+        # pass finds fewer than the cap, the eligible pool is exhausted, so
+        # stop looping and report totals.
+        if pass_predicted + pass_failed < PREDICTION_MAX_TRIPS_PER_RUN:
+            break
+    return {"predicted": predicted, "skipped_failed": failed}
+
+
 async def _run_pipeline(db: Session, trip):
     try:
         return await delay_prediction_service.predict_delay_for_trip(db, trip)

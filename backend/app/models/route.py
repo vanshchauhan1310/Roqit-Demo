@@ -2,7 +2,7 @@ import uuid
 
 from sqlalchemy import String, DateTime, Float, Integer, ForeignKey, func, BigInteger
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, selectinload
 
 from app.db.base import Base
 
@@ -31,7 +31,6 @@ class Route(Base):
     capacity_kg: Mapped[float | None] = mapped_column(Float)
     used_capacity_kg: Mapped[float | None] = mapped_column(Float)
     remaining_capacity_kg: Mapped[float | None] = mapped_column(Float)
-    delay_risk: Mapped[float | None] = mapped_column(Float)
     route_score: Mapped[float | None] = mapped_column(Float)
     current_lat: Mapped[float | None] = mapped_column(Float)
     current_lon: Mapped[float | None] = mapped_column(Float)
@@ -39,6 +38,23 @@ class Route(Base):
     stops: Mapped[list["RouteStop"]] = relationship(back_populates="route", order_by="RouteStop.sequence")
     driver: Mapped["Driver"] = relationship()
     vehicle: Mapped["Vehicle"] = relationship()
+
+    @property
+    def driver_name(self) -> str | None:
+        """Convenience accessor so RouteRead (from_attributes=True) can expose
+        the driver's name without the schema layer needing a custom validator."""
+        return self.driver.driver_name if self.driver else None
+
+    @property
+    def vehicle_name(self) -> str | None:
+        """Convenience accessor for a human-readable vehicle identifier.
+        Prefer ``vehicle.make + model``; fall back to ``vehicle_id`` so the UI
+        never sees '—' when a vehicle row exists but make/model aren't set."""
+        if self.vehicle is not None:
+            parts = [p for p in (self.vehicle.make, self.vehicle.model) if p]
+            if parts:
+                return " ".join(parts)
+        return self.vehicle_id
 
 
 class RouteStop(Base):

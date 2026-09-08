@@ -36,7 +36,7 @@ export function RoutesTable({ routes }: RoutesTableProps) {
       <table className="min-w-full">
         <thead>
           <tr className="border-b border-gray-100">
-            {["Route", "Status", "Trips", "Stops", "Driver", "Vehicle", "Pickup", "Created"].map((h) => (
+            {["Route", "Status", "Trips", "Stops", "Predictions", "Driver", "Vehicle", "Pickup", "Created"].map((h) => (
               <th
                 key={h}
                 className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap"
@@ -75,6 +75,26 @@ export function RoutesTable({ routes }: RoutesTableProps) {
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-xs text-gray-500">
                     ⇄ {route.stops.length} stops
                   </span>
+                </td>
+                <td className="px-4 py-3 text-sm whitespace-nowrap">
+                  {route.prediction_count == null || route.prediction_count === 0 ? (
+                    <span className="text-gray-400">—</span>
+                  ) : (
+                    <span
+                      className={`inline-flex flex-col leading-tight px-2 py-0.5 rounded-full text-xs font-medium ${
+                        (route.avg_delay_risk ?? 0) >= 0.5
+                          ? "bg-red-50 text-red-600"
+                          : (route.avg_delay_risk ?? 0) >= 0.25
+                            ? "bg-amber-50 text-amber-600"
+                            : "bg-emerald-50 text-emerald-600"
+                      }`}
+                    >
+                      <span>{route.prediction_count} prediction{route.prediction_count === 1 ? "" : "s"}</span>
+                      {route.avg_delay_risk != null && (
+                        <span className="font-mono">{Math.round(route.avg_delay_risk * 100)}% avg risk</span>
+                      )}
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">{route.driver_id ?? "—"}</td>
                 <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{route.vehicle_id ?? "—"}</td>

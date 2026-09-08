@@ -3,8 +3,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Set
 
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.route import Route, RouteStop
 from app.models.driver import Driver
@@ -155,7 +155,16 @@ def create_route(db: Session, route_in: RouteCreate) -> Route:
 
 
 def get_route(db: Session, route_id: uuid.UUID) -> Route | None:
-    route = db.get(Route, route_id)
+    route = (
+        db.query(Route)
+        .options(
+            selectinload(Route.stops),
+            selectinload(Route.driver),
+            selectinload(Route.vehicle),
+        )
+        .filter(Route.route_id == route_id)
+        .first()
+    )
     if not route:
         return None
 
@@ -171,7 +180,11 @@ def get_route(db: Session, route_id: uuid.UUID) -> Route | None:
 
 
 def list_routes(db: Session, skip: int = 0, limit: int = 100, trip_id: str | None = None) -> list[Route]:
-    query = db.query(Route)
+    query = db.query(Route).options(
+        selectinload(Route.stops),
+        selectinload(Route.driver),
+        selectinload(Route.vehicle),
+    )
     if trip_id:
         # Legacy single-trip links (Route.trip_id) plus the new grouped model
         # where a trip belongs to a route via its RouteStop rows.
@@ -193,7 +206,58 @@ def list_routes(db: Session, skip: int = 0, limit: int = 100, trip_id: str | Non
 
     if any_changed:
         db.commit()
+
+    _attach_prediction_rollups(db, routes)
     return routes
+
+
+def _attach_prediction_rollups(db: Session, routes: list[Route]) -> None:
+    """Attach per-route delay-prediction rollups (prediction_count,
+    avg_delay_risk) for the routes table. One grouped query over the page's
+    routes - predictions join to routes through their trips' RouteStop rows
+    (Route.trip_id is the legacy single-trip link and is covered too)."""
+    if not routes:
+        return
+    from app.models.delay_prediction import DelayPrediction
+    from app.models.trip import Trip
+
+    route_ids = [r.route_id for r in routes]
+    stats = (
+        db.query(
+            RouteStop.route_id.label("route_id"),
+            func.count(DelayPrediction.prediction_id).label("count"),
+            func.avg(DelayPrediction.delay_probability).label("avg"),
+        )
+        .join(Trip, Trip.trip_id == RouteStop.trip_id)
+        .join(DelayPrediction, DelayPrediction.trip_id == Trip.trip_id)
+        .filter(RouteStop.route_id.in_(route_ids))
+        .group_by(RouteStop.route_id)
+        .all()
+    )
+    by_route = {route_id: (count, avg) for route_id, count, avg in stats}
+
+    # Legacy single-trip routes: prediction counts keyed directly by trip_id.
+    legacy_trip_ids = [r.trip_id for r in routes if r.trip_id]
+    if legacy_trip_ids:
+        legacy_stats = (
+            db.query(
+                Trip.route_id,
+                func.count(DelayPrediction.prediction_id),
+                func.avg(DelayPrediction.delay_probability),
+            )
+            .join(DelayPrediction, DelayPrediction.trip_id == Trip.trip_id)
+            .filter(Trip.trip_id.in_(legacy_trip_ids))
+            .group_by(Trip.route_id)
+            .all()
+        )
+        for route_id, count, avg in legacy_stats:
+            if route_id is not None and route_id not in by_route:
+                by_route[route_id] = (count, avg)
+
+    for route in routes:
+        count, avg = by_route.get(route.route_id, (0, None))
+        route.prediction_count = count
+        route.avg_delay_risk = round(float(avg), 4) if avg is not None else None
 
 
 def update_route_status(db: Session, route: Route, status: str) -> Route:

@@ -74,16 +74,24 @@ class RouteRead(RouteBase):
     created_at: datetime
     stops: list[RouteStopRead] = []
     driver_id: str | None = None
+    driver_name: str | None = None
     vehicle_id: str | None = None
+    vehicle_name: str | None = None
     pickup_time: datetime | None = None
     planned_delivery_time: datetime | None = None
     weather_eta: datetime | None = None  # rule-based (OSRM + weather multiplier), not ML — see eta_service.py
 
-    # Fleet/planning fields surfaced to the Live Ops UI (utilization gauges,
+        # Fleet/planning fields surfaced to the Live Ops UI (utilization gauges,
     # cost panel, frozen-segment chips).
     capacity_kg: float | None = None
     used_capacity_kg: float | None = None
     frozen_until_sequence: int | None = None
+
+    # Delay-prediction rollup for the routes table (set by
+    # route_service.list_routes, not by the ORM): number of stored predictions
+    # across the route's trips and their mean delay probability.
+    prediction_count: int | None = None
+    avg_delay_risk: float | None = None
 
 
 class FleetRouteStopCreate(BaseModel):

@@ -57,6 +57,13 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    volumes:
+      # delay_prediction_service resolves the feature contract at
+      # <repo-root>/ml/feature_contract_v2.json (Path.parents[3]/ml), which in
+      # the container maps to /ml/feature_contract_v2.json. The backend image
+      # only COPYs ./backend, so without this mount every prediction request
+      # fails with FileNotFoundError. Read-only: the contract is ml-owned.
+      - ./ml/feature_contract_v2.json:/ml/feature_contract_v2.json:ro
     # Environment overrides beat env_file values. Service hostnames make the
     # stack host-independent: identical on any machine running Docker.
     environment:

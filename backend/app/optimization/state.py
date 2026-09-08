@@ -172,6 +172,7 @@ class TripAssignmentStatus(Enum):
     ORPHANED = "ORPHANED"
     MISSING_ROUTE_STOP = "MISSING_ROUTE_STOP"
     MISMATCHED_ROUTE = "MISMATCHED_ROUTE"
+    MISSING_RESOURCES = "MISSING_RESOURCES"
     UNASSIGNED = "UNASSIGNED"
 
 
@@ -220,7 +221,18 @@ def validate_trip_assignment(db: Session, trip: Trip) -> TripAssignmentStatus:
 
     stop_rows = db.query(RouteStop).filter(RouteStop.trip_id == trip.trip_id).all()
     stop_route_ids = {str(s.route_id) for s in stop_rows if s.route_id is not None}
-    return classify_assignment(route_id, True, stop_route_ids)
+    status = classify_assignment(route_id, True, stop_route_ids)
+    # A trip is not fully assigned until resources are bound at the trip level
+    # as well as the route level. This catches the limbo state where the route
+    # carries vehicle/driver but the trip's denormalized pointers are NULL
+    # (observed: 177 trips seen as "VALID" by the sweeper but skipped by the
+    # prediction pipeline for missing vehicle/driver fields).
+    if status == TripAssignmentStatus.VALID:
+        if trip.vehicle_id is None or trip.driver_id is None:
+            return TripAssignmentStatus.MISSING_RESOURCES
+    return status
+
+
 def repair_trip_assignment(db: Session, trip: Trip) -> bool:
     """Repair an invalid assignment in place so the existing assignment
     pipeline can take over. Returns True if anything changed.
@@ -243,6 +255,22 @@ def repair_trip_assignment(db: Session, trip: Trip) -> bool:
             db.add(trip)
             return True
 
+# Route exists, stops match, but the trip's denormalized vehicle/driver
+    # pointers were never populated (limbo state.). If the route rebinds resources,
+    # heal in place —that is the cheap, non-destructive fix. Otherwise the route
+    # itself is resource-less: clear route state (and stale stops) so the full
+    # assignment pipeline re-plans the trip from scratch.
+    if status == TripAssignmentStatus.MISSING_RESOURCES:
+        route = _route_from_string_id(db, str(trip.route_id))
+        if route is not None and route.vehicle_id is not None  and route.driver_id is not None:
+            trip.vehicle_id = route.vehicle_id
+            trip.driver_id  = route.driver_id
+            db.add(trip)
+            return True
+        for stop in db.query(RouteStop).filter(RouteStop.trip_id == trip.trip_id).all():
+            db.delete(stop)
+        trip.vehicle_id = None
+        trip.driver_id  = None
     trip.route_id = None
     trip.assigned_at = None
     db.add(trip)

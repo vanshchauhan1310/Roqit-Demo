@@ -747,9 +747,9 @@ function PanelBody({
 
       {/* Metrics */}
       <div className="grid grid-cols-4 gap-2">
-        <MetricCell label="Cost before" value={run.old_cost != null ? run.old_cost.toFixed(1) : "—"} />
+        <MetricCell label="Score before" value={run.old_cost != null ? run.old_cost.toFixed(1) : "—"} />
         <MetricCell
-          label="Cost after"
+          label="Score after"
           value={run.new_cost != null ? run.new_cost.toFixed(1) : "—"}
           accent={accepted ? "text-teal-300" : undefined}
         />

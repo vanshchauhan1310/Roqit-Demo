@@ -1,5 +1,6 @@
 """Trip Assignment Worker - processes incoming trips and assigns them to routes."""
 
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -30,6 +31,19 @@ from app.optimization.state import (
 from app.infrastructure.queue import Queue, QueueJob, get_queue
 from app.optimization.state import acquire_writer_lock
 
+# Process-local pause flag. All workers run as threads inside the API process
+# (see supervisor.Supervisor.start), so an Event is enough - no Redis round-trip.
+#
+# Why it exists: the greedy assignment worker holds the writer-funnel advisory
+# lock for the WHOLE assignment job, and its candidate search is slow enough
+# (~30s per job on a populated DB) that with the unassigned-sweeper re-enqueueing
+# trips every 60s the funnel is effectively never free. Every LNS iteration
+# needs the same lock (repair -> sync_route_capacity) and timed out on all of
+# them -> LNS runs completed with 0 iterations. The LNS worker sets this flag
+# for the duration of a run so assignment jobs and sweeps step aside; the
+# sweeper re-enqueues anything skipped once the run finishes.
+assignment_paused = threading.Event()
+
 
 class TripAssignmentWorker:
     """Worker that processes trip assignment jobs from the queue."""
@@ -46,6 +60,13 @@ class TripAssignmentWorker:
         if not trip_id:
             print(f"Invalid job payload: {job.payload}")
             return False
+
+        # LNS runs exclusively: it needs the writer funnel for every iteration.
+        # Returning True (not False) so the job isn't burned through retries -
+        # the unassigned-sweeper re-enqueues the trip after the LNS run ends.
+        if assignment_paused.is_set():
+            print(f"Trip {trip_id}: assignment paused for LNS run, deferring")
+            return True
 
         print(f"Processing trip assignment for {trip_id}")
 
@@ -74,12 +95,27 @@ class TripAssignmentWorker:
             print(f"Trip {trip_id} not found")
             return False
 
+        # Poison-pill guard: trips created before geocoding was wired into
+        # create_trip have NULL GPS coordinates, and the haversine math in
+        # candidate search crashes on them ("must be real number, not
+        # NoneType") - which previously burned a retry every sweep forever.
+        # Skip cleanly instead; the trip stays unassigned and the sweeper
+        # won't spam crash traces for it.
+        coords = (trip.gps_start_lat, trip.gps_start_lon, trip.gps_end_lat, trip.gps_end_lon)
+        if any(c is None for c in coords):
+            print(
+                f"Trip {trip_id}: missing GPS coordinates "
+                f"({', '.join(n for n, c in zip(('start_lat','start_lon','end_lat','end_lon'), coords) if c is None)}); "
+                "cannot route-match - leaving unassigned"
+            )
+            return True
+
         # Check if already assigned - using the canonical assignment-state
         # validator, never blindly trusting a non-null route_id (a trip can
         # carry a route_id to a deleted route, or lack a matching RouteStop).
         if trip.route_id:
             status = validate_trip_assignment(db, trip)
-            if status == TripAssignmentStatus.VALID:
+            if status == TripAssignmentStatus.VALID:                
                 print(f"Trip {trip_id} already assigned to route {trip.route_id}")
                 return True
 
@@ -88,6 +124,13 @@ class TripAssignmentWorker:
             if repair_trip_assignment(db, trip):
                 db.commit()
                 print(f"Trip {trip_id}: repaired invalid assignment state ({status.value})")
+                # If the repair fully healed the trip (route + stops + resources
+                # all present — e.g. MISSING_RESOURCES copied back from the route),
+                # we're done. Do NOT let greedy insertion re-insert a trip that already
+                # sits in a route — that would duplicate its RouteStop rows.
+                if validate_trip_assignment(db, trip) == TripAssignmentStatus.VALID:                    
+                    print(f"Trip {trip_id}: resources backfilled from route - assignment complete")
+                    return True
                 # The commit above ended the transaction — and with it the
                 # xact-scoped writer funnel lock. Re-acquire before the
                 # mutation phase below, otherwise greedy insertion races the
@@ -128,10 +171,19 @@ class TripAssignmentWorker:
             return True
 
         elif result.new_route_created:
-            # This shouldn't happen - greedy_insertion only returns new_route_created=False
-            # New route creation is handled separately
-            print(f"Trip {trip_id} needs new route creation")
-            return self._create_new_route(db, trip)
+            # greedy_insertion already created the route and assigned the trip
+            # (this happens when no existing routes are feasible)
+            print(f"Trip {trip_id} assigned to new route {result.route.route_id}")
+            # Log audit for the new route creation
+            audit_logger.log_new_route_created(
+                db=db,
+                trip=trip,
+                route=result.route,
+                vehicle_id=result.vehicle.vehicle_id,
+                driver_id=result.route.driver_id,
+                algorithm_version="greedy-v1",
+            )
+            return True
 
         else:
             # No feasible route found - create new route
@@ -390,6 +442,12 @@ def sweep_unassigned_trips(batch: int = 25) -> int:
     actually get re-enqueued (the old ``route_id IS NULL``-only filter missed
     orphaned trips forever)..
     """
+    # During an LNS run the sweeper would just feed the assignment worker,
+    # which is paused anyway - and its re-enqueued jobs would pile up. A
+    # no-op here keeps queue depth stable; trips are picked up on the next
+    # tick after the run finishes.
+    if assignment_paused.is_set():
+        return 0
 
     db = SessionLocal()
     try:

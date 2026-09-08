@@ -15,17 +15,20 @@ from app.models.driver import Driver
 
 # (vehicle_id, type, make, model, year, fuel, capacity_kg, kmpl, base_location)
 VEHICLES = [
-    ("VEH001", "Truck", "Tata", "Ace Gold", 2022, "diesel", 2000, 18.0, "Hyderabad"),
-    ("VEH002", "Truck", "Mahindra", "Bolero Maxx", 2021, "diesel", 3500, 16.0, "Hyderabad"),
-    ("VEH003", "Truck", "Ashok Leyland", "Dost+", 2023, "diesel", 3000, 17.0, "Hyderabad"),
-    ("VEH004", "Truck", "Eicher", "Pro 2049", 2022, "diesel", 6000, 12.0, "Hyderabad"),
-    ("VEH005", "Truck", "Tata", "Ultra 1918", 2021, "diesel", 9000, 8.5, "Hyderabad"),
-    ("VEH006", "Truck", "BharatBenz", "1917C", 2020, "diesel", 12000, 6.5, "Hyderabad"),
-    ("VEH007", "Truck", "Ashok Leyland", "Boss 1920", 2023, "diesel", 14000, 6.0, "Hyderabad"),
-    ("VEH008", "Truck", "Tata", "Signa 4825", 2022, "diesel", 16000, 5.0, "Hyderabad"),
+    # fuel_type values must match the ML feature contract's Literal["CNG", "Diesel"]
+    # exactly - lowercase "diesel" makes every delay/cost prediction fail with
+    # UnsupportedCategoryError (see delay_prediction_service._check_vocabulary).
+    ("VEH001", "Truck", "Tata", "Ace Gold", 2022, "Diesel", 2000, 18.0, "Hyderabad"),
+    ("VEH002", "Truck", "Mahindra", "Bolero Maxx", 2021, "Diesel", 3500, 16.0, "Hyderabad"),
+    ("VEH003", "Truck", "Ashok Leyland", "Dost+", 2023, "Diesel", 3000, 17.0, "Hyderabad"),
+    ("VEH004", "Truck", "Eicher", "Pro 2049", 2022, "Diesel", 6000, 12.0, "Hyderabad"),
+    ("VEH005", "Truck", "Tata", "Ultra 1918", 2021, "Diesel", 9000, 8.5, "Hyderabad"),
+    ("VEH006", "Truck", "BharatBenz", "1917C", 2020, "Diesel", 12000, 6.5, "Hyderabad"),
+    ("VEH007", "Truck", "Ashok Leyland", "Boss 1920", 2023, "Diesel", 14000, 6.0, "Hyderabad"),
+    ("VEH008", "Truck", "Tata", "Signa 4825", 2022, "Diesel", 16000, 5.0, "Hyderabad"),
     # Non-Truck types for realism; the auto-feed only books Trucks.
-    ("VEH101", "Tempo", "Force", "Trax Cargo", 2022, "diesel", 1200, 19.0, "Hyderabad"),
-    ("VEH102", "Trailer", "Tata", "Signa 5525", 2021, "diesel", 25000, 4.0, "Hyderabad"),
+    ("VEH101", "Tempo", "Force", "Trax Cargo", 2022, "Diesel", 1200, 19.0, "Hyderabad"),
+    ("VEH102", "Trailer", "Tata", "Signa 5525", 2021, "Diesel", 25000, 4.0, "Hyderabad"),
 ]
 
 # (driver_id, name, phone, license, expiry, joined, exp_years, base, rating)

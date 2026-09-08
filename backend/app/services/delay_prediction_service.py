@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.delay_prediction import DelayPrediction
 from app.models.trip import RESOLVED_STATUSES, DELAYED_STATUS, Trip
+from app.optimization.state import COMPLETED_TRIP_STATUS
 from app.services import ml_client
 from app.services.weather_client import get_ml_weather_condition
 
@@ -70,14 +71,37 @@ def _load_feature_contract() -> dict:
 
 def _history_stats(db: Session, *filters) -> tuple[int, float]:
     """Trip counts/delay-rate as-of the current trip: prior RESOLVED trips
-    only (status Delivered/Delayed - In-Transit/Cancelled excluded, they have
-    no real delay outcome), matching the training notebook's time-aware
-    "prior trips before this pickup_time" definition exactly."""
-    prior = db.query(Trip.status).filter(and_(*filters), Trip.status.in_(RESOLVED_STATUSES)).all()
+    (status Delivered/Delayed) plus trips the completion worker closed as
+    ``completed`` - In-Transit/Scheduled/Cancelled excluded, they have no real
+    delay outcome. Matches the training notebook's time-aware "prior trips
+    before this pickup_time" definition; the completion-worker statuses are
+    folded in so routes accumulate history as trips finish (otherwise
+    route/driver stats stay pinned at 0 for the demo lifecycle, since the
+    worker never sets 'Delivered').
+
+    Delay classification: Delivered/Delayed keep the status rule; a
+    ``completed`` trip counts as delayed when it arrived after its planned
+    delivery time (or delay_minutes > 90, the documented threshold) - when no
+    planned time exists the trip still counts toward the total but not the
+    delay rate (honest: unknown outcome, not silently counted on-time).
+    """
+    statuses = (*RESOLVED_STATUSES, COMPLETED_TRIP_STATUS)
+    prior = db.query(
+        Trip.status, Trip.planned_delivery_time, Trip.actual_delivery_time, Trip.delay_minutes
+    ).filter(and_(*filters), Trip.status.in_(statuses)).all()
     count = len(prior)
     if count == 0:
         return 0, 0.0
-    delay_rate = sum(1 for (status,) in prior if status == DELAYED_STATUS) / count
+    delayed = 0
+    for status, planned, actual, delay_min in prior:
+        if status == DELAYED_STATUS:
+            delayed += 1
+        elif status == COMPLETED_TRIP_STATUS and planned is not None and actual is not None:
+            if actual > planned:
+                delayed += 1
+        elif status == COMPLETED_TRIP_STATUS and delay_min is not None and delay_min > 90:
+            delayed += 1
+    delay_rate = delayed / count
     return count, delay_rate
 
 

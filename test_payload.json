@@ -1,0 +1,23 @@
+{
+  "jobs": [
+    {"trip_id": "trip1", "pickup_stop_index": 0, "delivery_stop_index": 1, "load_weight_kg": 1000}
+  ],
+  "vehicles": [
+    {"vehicle_id": "v1", "capacity_kg": 5000, "start_location": 2, "avg_kmpl_rated": 8.5, "fuel_price_per_l": 92.5}
+  ],
+  "duration_matrix": [
+    [0, 100, 50],
+    [100, 0, 80],
+    [50, 80, 0]
+  ],
+  "distance_matrix": [
+    [0, 10000, 5000],
+    [10000, 0, 8000],
+    [5000, 8000, 0]
+  ],
+  "coordinates": [[0, 0], [1, 1], [0.5, 0.5]],
+  "start_time": 0,
+  "auto_generate_windows": true,
+  "vehicle_speed_kph": 40.0,
+  "solver_time_limit_seconds": 10
+}

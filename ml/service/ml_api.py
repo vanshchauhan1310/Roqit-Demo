@@ -54,7 +54,7 @@ class DelayPredictionRequest(BaseModel):
     experience_years: float
     rating: float
     driver_base_location: Literal[
-        "Ahmedabad", "Bangalore", "Coimbatore", "Delhi", "Indore", "Jaipur",
+        "Ahmedabad", "Bangalore", "Coimbatore", "Delhi", "Hyderabad", "Indore", "Jaipur",
         "Kolkata", "Mumbai", "Nagpur", "Pune", "Surat", "Vijayawada", "Visakhapatnam",
     ]
     fuel_type: Literal["CNG", "Diesel"]
@@ -93,6 +93,32 @@ class FuelPredictionResponse(BaseModel):
 
 class TripCostPredictionResponse(BaseModel):
     predicted_trip_cost: float
+
+
+class FuelSequenceSegment(BaseModel):
+    segment_index: int
+    segment_name: str
+    distance_km: float
+    load_weight_kg: float
+    predicted_fuel_liters: float
+
+
+class FuelSequencePredictionRequest(BaseModel):
+    vehicle_type: Literal["Container Truck", "Mini Truck", "Refrigerated Truck", "Trailer", "Truck"]
+    road_type: Literal["City Road", "Highway", "Rural Road", "State Road"]
+    traffic_density: Literal["High", "Low", "Medium", "Severe"]
+    weather_condition: Literal["Clear", "Extreme Heat", "Fog", "Rain", "Storm"]
+    fuel_type: Literal["CNG", "Diesel"]
+    avg_kmpl_rated: float
+    vehicle_age_years: int
+    fuel_price_per_l: float
+    segment_distances_km: list[float]
+    segment_loads_kg: list[float] | None = None
+
+
+class FuelSequencePredictionResponse(BaseModel):
+    segments: list[FuelSequenceSegment]
+    total_predicted_fuel_liters: float
 
 
 class OptimizeJob(BaseModel):
@@ -209,6 +235,22 @@ def predict_trip_cost(request: CostPredictionRequest):
     except FileNotFoundError:
         raise HTTPException(status_code=503, detail="Trip-cost model not found in models_store/.")
     return TripCostPredictionResponse(**result)
+
+
+@app.post("/predict/fuel-sequence", response_model=FuelSequencePredictionResponse)
+def predict_fuel_sequence(request: FuelSequencePredictionRequest):
+    try:
+        base_payload = request.model_dump(exclude={"segment_distances_km", "segment_loads_kg"})
+        results = fuel_consumption.predict_sequence(
+            base_payload=base_payload,
+            segment_distances_km=request.segment_distances_km,
+            segment_loads_kg=request.segment_loads_kg
+        )
+        total_fuel = sum(r["predicted_fuel_liters"] for r in results)
+        segments = [FuelSequenceSegment(**r) for r in results]
+        return FuelSequencePredictionResponse(segments=segments, total_predicted_fuel_liters=total_fuel)
+    except FileNotFoundError:
+        raise HTTPException(status_code=503, detail="Fuel-consumption model not found in models_store/.")
 
 
 @app.post("/optimize/pickup-delivery", response_model=PickupDeliveryOptimizeResponse)

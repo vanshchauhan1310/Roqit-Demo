@@ -1,6 +1,89 @@
 import { useEffect, useRef, useState } from "react";
 import type { Route } from "@/types/route";
 import { colorForRouteId } from "@/utils/routeColors";
+import { useTripDelayPrediction, useTripExpectedDelay } from "@/hooks/useTripDelay";
+import { DelayBadge } from "./DelayBadge";
+
+function RouteRow({
+  route: r,
+  color,
+  selectedRouteId,
+  onOpenRoute,
+}: {
+  route: Route;
+  color: string;
+  selectedRouteId: string | null;
+  onOpenRoute: (id: string) => void;
+}) {
+  // Pick the first trip in the route to represent the route's delay risk.
+  const firstTripId = r.stops?.find((s) => s.trip_id)?.trip_id ?? null;
+  const { data: delayPred, isLoading: delayLoading } = useTripDelayPrediction(firstTripId);
+  const { data: expectedDelay } = useTripExpectedDelay(firstTripId);
+
+  const capPct =
+    r.capacity_kg && r.used_capacity_kg != null
+      ? Math.min(100, Math.round((r.used_capacity_kg / r.capacity_kg) * 100))
+      : null;
+
+  return (
+    <button
+      key={r.route_id}
+      onClick={() => onOpenRoute(r.route_id)}
+      className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
+        selectedRouteId === r.route_id
+          ? "bg-slate-800 ring-1 ring-teal-500/50"
+          : "bg-slate-800/40 hover:bg-slate-800"
+      }`}
+    >
+      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+      <span className="text-[11px] font-medium text-slate-300 w-28 truncate shrink-0">
+        {r.name ?? r.route_id.slice(0, 8)}
+      </span>
+      <span className="flex-1 flex items-center gap-1 overflow-x-auto ops-scroll py-0.5">
+        {[...(r.stops ?? [])]
+          .sort((a, b) => a.sequence - b.sequence)
+          .map((s) => {
+            const frozen = (r.frozen_until_sequence ?? 0) >= (s.sequence ?? 0);
+            return (
+              <span
+                key={s.stop_id}
+                title={`#${s.sequence} ${s.stop_type}${s.trip_id ? ` · ${s.trip_id}` : ""}${
+                  frozen ? " · 🔒 frozen (LNS can't touch this leg)" : ""
+                }`}
+                className={`shrink-0 w-5 h-5 rounded-md text-[9px] font-bold flex items-center justify-center border ${
+                  s.stop_type === "pickup"
+                    ? "bg-slate-950 text-slate-200 border-slate-600"
+                    : "bg-slate-800 text-slate-400 border-slate-700"
+                } ${frozen ? "opacity-45" : ""}`}
+              >
+                {s.stop_type === "pickup" ? "P" : "D"}
+              </span>
+            );
+          })}
+        {((r.stops ?? []).length > 0) && (r.frozen_until_sequence ?? 0) > 0 && (
+          <span
+            className="shrink-0 rounded px-1 py-0.5 text-[9px] border border-slate-700 text-slate-500"
+            title={`First ${r.frozen_until_sequence} stop(s) frozen — in-progress legs LNS will not re-plan`}
+          >
+            🔒 {r.frozen_until_sequence}
+          </span>
+        )}
+      </span>
+      <DelayBadge prediction={delayPred} loading={delayLoading} expectedMinutes={expectedDelay?.predicted_delay_minutes} />
+      {capPct != null && (
+        <span className="hidden xl:flex items-center gap-1.5 w-24 shrink-0">
+          <span className="flex-1 h-1 rounded-full bg-slate-800 overflow-hidden">
+            <span
+              className="block h-full rounded-full"
+              style={{ width: `${capPct}%`, backgroundColor: capPct > 90 ? "#f87171" : color }}
+            />
+          </span>
+          <span className="text-[9px] text-slate-500 tnum w-8 text-right">{capPct}%</span>
+        </span>
+      )}
+    </button>
+  );
+}
 
 /**
  * Plan-builder strip: for every active route, shows the stop sequence as
@@ -17,7 +100,7 @@ export function PlanStrip({
   selectedRouteId: string | null;
 }) {
   const seenStopsRef = useRef<Set<string>>(new Set());
-  const [freshStops, setFreshStops] = useState<Set<string>>(new Set());
+  const [, setFreshStops] = useState<Set<string>>(new Set());
   const initializedRef = useRef(false);
 
   useEffect(() => {
@@ -50,72 +133,15 @@ export function PlanStrip({
         <span className="text-[10px] text-slate-500">pickup ● P · delivery ● D · click a chip for details</span>
       </div>
       <div className="space-y-1.5 max-h-[132px] overflow-y-auto ops-scroll pr-1">
-        {active.map((r) => {
-          const color = colorForRouteId(r.route_id);
-          const capPct =
-            r.capacity_kg && r.used_capacity_kg != null
-              ? Math.min(100, Math.round((r.used_capacity_kg / r.capacity_kg) * 100))
-              : null;
-          return (
-            <button
-              key={r.route_id}
-              onClick={() => onOpenRoute(r.route_id)}
-              className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-colors ${
-                selectedRouteId === r.route_id
-                  ? "bg-slate-800 ring-1 ring-teal-500/50"
-                  : "bg-slate-800/40 hover:bg-slate-800"
-              }`}
-            >
-              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
-              <span className="text-[11px] font-medium text-slate-300 w-28 truncate shrink-0">
-                {r.name ?? r.route_id.slice(0, 8)}
-              </span>
-              <span className="flex-1 flex items-center gap-1 overflow-x-auto ops-scroll py-0.5">
-                {[...(r.stops ?? [])]
-                  .sort((a, b) => a.sequence - b.sequence)
-                  .map((s) => {
-                    const frozen = (r.frozen_until_sequence ?? 0) >= (s.sequence ?? 0);
-                    return (
-                      <span
-                        key={s.stop_id}
-                        title={`#${s.sequence} ${s.stop_type}${s.trip_id ? ` · ${s.trip_id}` : ""}${
-                          frozen ? " · 🔒 frozen (LNS can't touch this leg)" : ""
-                        }`}
-                        className={`shrink-0 w-5 h-5 rounded-md text-[9px] font-bold flex items-center justify-center border ${
-                          s.stop_type === "pickup"
-                            ? "bg-slate-950 text-slate-200 border-slate-600"
-                            : "bg-slate-800 text-slate-400 border-slate-700"
-                        } ${frozen ? "opacity-45" : ""} ${
-                          freshStops.has(s.stop_id) ? "chip-pop ring-1 ring-teal-400" : ""
-                        }`}
-                      >
-                        {s.stop_type === "pickup" ? "P" : "D"}
-                      </span>
-                    );
-                  })}
-                {((r.stops ?? []).length > 0) && (r.frozen_until_sequence ?? 0) > 0 && (
-                  <span
-                    className="shrink-0 rounded px-1 py-0.5 text-[9px] border border-slate-700 text-slate-500"
-                    title={`First ${r.frozen_until_sequence} stop(s) frozen — in-progress legs LNS will not re-plan`}
-                  >
-                    🔒 {r.frozen_until_sequence}
-                  </span>
-                )}
-              </span>
-              {capPct != null && (
-                <span className="hidden xl:flex items-center gap-1.5 w-24 shrink-0">
-                  <span className="flex-1 h-1 rounded-full bg-slate-800 overflow-hidden">
-                    <span
-                      className="block h-full rounded-full"
-                      style={{ width: `${capPct}%`, backgroundColor: capPct > 90 ? "#f87171" : color }}
-                    />
-                  </span>
-                  <span className="text-[9px] text-slate-500 tnum w-8 text-right">{capPct}%</span>
-                </span>
-              )}
-            </button>
-          );
-        })}
+        {active.map((r) => (
+          <RouteRow
+            key={r.route_id}
+            route={r}
+            color={colorForRouteId(r.route_id)}
+            selectedRouteId={selectedRouteId}
+            onOpenRoute={onOpenRoute}
+          />
+        ))}
       </div>
     </div>
   );

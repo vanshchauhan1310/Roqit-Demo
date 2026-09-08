@@ -2,7 +2,9 @@ import { useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useRouteDetail } from "@/hooks/useRouteDetail";
 import { useTripDetail } from "@/hooks/useTripDetail";
+import { useTripDelayPrediction, useTripExpectedDelay } from "@/hooks/useTripDelay";
 import { RouteDetailTabs } from "@/components/trip/RouteDetailTabs";
+import { DelayBadge } from "@/components/liveops/DelayBadge";
 
 function shortId(routeId: string): string {
   return routeId.length > 8 ? `…${routeId.slice(-8)}` : routeId;
@@ -18,6 +20,8 @@ export function RouteDetailPage() {
   }, [route]);
 
   const { data: trip } = useTripDetail(firstTripId);
+  const { data: delayPrediction, isLoading: delayLoading } = useTripDelayPrediction(firstTripId ?? null);
+  const { data: expectedDelay } = useTripExpectedDelay(firstTripId ?? null);
   const hasLinkedTrips = Boolean(route && firstTripId);
 
   return (
@@ -39,9 +43,15 @@ export function RouteDetailPage() {
             <span className="text-gray-300">·</span>
             <span>{route.stops.length} stops</span>
             <span className="text-gray-300">·</span>
-            <span>Driver {route.driver_id ?? "—"}</span>
+                        <span>Driver {route.driver_name ?? route.driver_id ?? "—"}</span>
             <span className="text-gray-300">·</span>
-            <span>Vehicle {route.vehicle_id ?? "—"}</span>
+            <span>Vehicle {route.vehicle_name ?? route.vehicle_id ?? "—"}</span>
+            <span className="text-gray-300">·</span>
+            <DelayBadge
+              prediction={delayPrediction}
+              loading={delayLoading}
+              expectedMinutes={expectedDelay?.predicted_delay_minutes}
+            />
           </div>
 
           {!hasLinkedTrips && (

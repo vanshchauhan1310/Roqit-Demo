@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import and_, not_, func
+from sqlalchemy import and_, not_, func, or_
 from sqlalchemy.orm import Session
 
 from app.models.route import Route, RouteStop
@@ -125,7 +125,7 @@ class GreedyInsertion:
             ]
 
             available_drivers = db.query(Driver).filter(
-                Driver.status == "available",
+                or_(Driver.status == "active", Driver.status.is_(None)),
                 not_(Driver.driver_id.in_(active_route_driver_ids)) if active_route_driver_ids else True
             ).order_by(Driver.rating.desc()).all()
 
@@ -137,7 +137,7 @@ class GreedyInsertion:
                 ).all()
             ]
             available_vehicles = db.query(Vehicle).filter(
-                Vehicle.status == "available",
+                or_(Vehicle.status == "active", Vehicle.status.is_(None)),
                 not_(Vehicle.vehicle_id.in_(active_route_vehicle_ids)) if active_route_vehicle_ids else True
             ).order_by(Vehicle.load_capacity_kg.desc()).all()
 
