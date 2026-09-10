@@ -20,11 +20,18 @@ async def fetch_weather(lat: float, lon: float) -> WeatherResult:
 
     data = response.json()
     weather = (data.get("weather") or [{}])[0]
+    main = data.get("main") or {}
+    wind = data.get("wind") or {}
 
     return WeatherResult(
         condition=weather.get("main", "Unknown"),
         description=weather.get("description"),
-        temp_c=(data.get("main") or {}).get("temp"),
+        temp_c=main.get("temp"),
+        feels_like_c=main.get("feels_like"),
+        humidity=main.get("humidity"),
+        wind_speed_ms=wind.get("speed"),
+        icon=weather.get("icon"),
+        location_name=data.get("name"),
     )
 
 

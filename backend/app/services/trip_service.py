@@ -11,6 +11,8 @@ from app.models.route import Route, RouteStop
 from app.models.trip import Trip
 from app.models.vehicle import Vehicle
 from app.schemas.trip import TripCreate, TripFilterOptions, TripOutcomeUpdate
+from app.core.service_area import validate_trip_within_service_area
+from app.services.geocode_client import geocode_address
 from app.services.weather_client import get_ml_weather_condition
 
 # Demo-only: there's no live telemetry feed wired in yet, so every trip gets a deterministic
@@ -56,6 +58,21 @@ class LoadExceedsCapacityError(ValueError):
     pass
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """Normalize a datetime to aware UTC.
+
+    Postgres/Supabase stores ``timestamptz`` and psycopg2 returns aware
+    datetimes, but a schema created from our models (``DateTime`` without
+    ``timezone=True``) stores naive ``timestamp`` values. Comparing the two
+    raises ``TypeError: can't compare offset-naive and offset-aware``, which
+    surfaces as a 500 on any trip/route read. This helper makes the comparison
+    side safe either way (see README2 §7.3).
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _apply_auto_status_transition(trip: Trip, now: datetime) -> bool:
     """Advances Scheduled -> In-Transit -> Delivered based on pickup_time/actual_delivery_time vs now.
 
@@ -65,11 +82,11 @@ def _apply_auto_status_transition(trip: Trip, now: datetime) -> bool:
     if not trip.status or trip.status.lower() not in _AUTO_TRANSITION_STATUSES:
         return False
 
-    if trip.actual_delivery_time and now >= trip.actual_delivery_time:
+    if trip.actual_delivery_time and now >= _as_utc(trip.actual_delivery_time):
         if trip.status != "Delivered":
             trip.status = "Delivered"
             return True
-    elif trip.pickup_time and now >= trip.pickup_time:
+    elif trip.pickup_time and now >= _as_utc(trip.pickup_time):
         if trip.status != "In-Transit":
             trip.status = "In-Transit"
             return True
@@ -81,8 +98,85 @@ def _generate_trip_id() -> str:
     return f"TRP-{uuid.uuid4().hex[:8].upper()}"
 
 
+# Straight-line -> road-network distance inflation for the haversine estimate
+# used when OSRM can't route the pair. Same order of magnitude as the factor
+# fix_prediction_data.py measures with real OSRM distances on this service area.
+_ROAD_DISTANCE_FACTOR = 1.3
+# Same planned-speed assumption fix_prediction_data.py backfills with.
+_PLANNED_SPEED_KMPH = 40.0
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    from math import atan2, cos, radians, sin, sqrt
+
+    r = 6371.0
+    lat1, lon1, lat2, lon2 = radians(lat1), radians(lon1), radians(lat2), radians(lon2)
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    return 2 * r * atan2(sqrt(a), sqrt(1 - a))
+
+
+async def _resolve_trip_geo_defaults(trip_data: dict) -> None:
+    """Fill in the fields a dispatcher never enters but the assignment worker
+    (haversine math crashes on NULL coords) and the delay-prediction feature
+    contract (planned_distance_km / pickup_time / planned_delivery_time are
+    ML-required) both need.
+
+    Degrades gracefully: geocoding/OSRM failures leave fields NULL rather than
+    failing trip creation - only a geocode that lands OUTSIDE the Hyderabad
+    service area is rejected, with the same error the schema validator uses.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    start_missing = trip_data.get("gps_start_lat") is None or trip_data.get("gps_start_lon") is None
+    end_missing = trip_data.get("gps_end_lat") is None or trip_data.get("gps_end_lon") is None
+
+    if start_missing and trip_data.get("origin"):
+        try:
+            res = await geocode_address(trip_data["origin"])
+            trip_data["gps_start_lat"], trip_data["gps_start_lon"] = res.lat, res.lng
+        except Exception as exc:
+            logger.warning("Geocoding origin %r failed (trip still created): %s", trip_data["origin"], exc)
+    if end_missing and trip_data.get("destination"):
+        try:
+            res = await geocode_address(trip_data["destination"])
+            trip_data["gps_end_lat"], trip_data["gps_end_lon"] = res.lat, res.lng
+        except Exception as exc:
+            logger.warning("Geocoding destination %r failed (trip still created): %s", trip_data["destination"], exc)
+
+    validate_trip_within_service_area(
+        trip_data.get("gps_start_lat"),
+        trip_data.get("gps_start_lon"),
+        trip_data.get("gps_end_lat"),
+        trip_data.get("gps_end_lon"),
+    )
+
+    coords = (
+        trip_data.get("gps_start_lat"),
+        trip_data.get("gps_start_lon"),
+        trip_data.get("gps_end_lat"),
+        trip_data.get("gps_end_lon"),
+    )
+    if trip_data.get("planned_distance_km") is None and all(c is not None for c in coords):
+        trip_data["planned_distance_km"] = round(_haversine_km(*coords) * _ROAD_DISTANCE_FACTOR, 1)
+
+    # timestamp-without-time-zone columns -> naive UTC, mirroring how the
+    # simulator and the data-repair script stamp trips.
+    if trip_data.get("pickup_time") is None:
+        trip_data["pickup_time"] = datetime.now(timezone.utc).replace(tzinfo=None)
+    if trip_data.get("planned_delivery_time") is None:
+        distance = trip_data.get("planned_distance_km")
+        if distance:
+            trip_data["planned_delivery_time"] = trip_data["pickup_time"] + timedelta(
+                hours=distance / _PLANNED_SPEED_KMPH
+            )
+
+
 async def create_trip(db: Session, trip_in: TripCreate) -> Trip:
     trip_data = trip_in.model_dump()
+    await _resolve_trip_geo_defaults(trip_data)
 
     vehicle_id = trip_data.get("vehicle_id")
     load_weight_kg = trip_data.get("load_weight_kg")
@@ -107,6 +201,11 @@ async def create_trip(db: Session, trip_in: TripCreate) -> Trip:
         trip_data["weather_condition"] = await get_ml_weather_condition(
             trip_data.get("gps_start_lat"), trip_data.get("gps_start_lon")
         )
+    if trip_data.get("weather_condition") is None:
+        # No OPENWEATHER_API_KEY or provider failure: weather_condition is an
+        # ML-required field, so a NULL here would permanently block prediction
+        # for this trip. "Clear" is the neutral, lowest-risk vocabulary member.
+        trip_data["weather_condition"] = "Clear"
 
     if trip_data.get("road_type") is None:
         trip_data["road_type"] = _infer_road_type(trip_data.get("planned_distance_km"))

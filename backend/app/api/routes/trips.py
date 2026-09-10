@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.service_area import TripOutsideServiceAreaError
 from app.schemas.driver_intelligence import DriverIntelligenceRead
 from app.schemas.eta_prediction import EtaPredictionRead
 from app.schemas.fuel_cost import FuelCostEstimateRead, TripCostPredictionRead
@@ -32,6 +33,9 @@ async def create_trip(trip_in: TripCreate, db: Session = Depends(get_db)):
     except trip_service.DuplicateIdError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except trip_service.LoadExceedsCapacityError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except TripOutsideServiceAreaError as exc:
+        # Geocoded origin/destination landed outside the Hyderabad service area
         raise HTTPException(status_code=422, detail=str(exc))
 
     # Queue for async assignment

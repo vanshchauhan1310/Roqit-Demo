@@ -56,3 +56,15 @@ async def optimize_pickup_delivery_route(payload: dict) -> dict:
         response = await client.post("/optimize/pickup-delivery", json=payload)
         response.raise_for_status()
         return response.json()
+
+
+async def optimize_fleet_routes(payload: dict) -> dict:
+    """Calls the ML service's multi-vehicle fleet optimizer. payload shape:
+    {jobs, vehicles, duration_matrix, distance_matrix, driver_cost_per_hour,
+    operating_cost_per_km, iterations, seed}. Longer timeout than the
+    single-vehicle call - the search space is larger by a factor of the fleet
+    size, since every job's insertion is evaluated against every vehicle."""
+    async with httpx.AsyncClient(base_url=settings.ML_SERVICE_URL, timeout=60.0) as client:
+        response = await client.post("/optimize/fleet", json=payload)
+        response.raise_for_status()
+        return response.json()

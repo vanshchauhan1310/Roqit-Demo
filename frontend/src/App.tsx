@@ -6,6 +6,8 @@ import { TripsPage } from "@/pages/TripsPage";
 import { TripDetailPage } from "@/pages/TripDetailPage";
 import { RouteDetailPage } from "@/pages/RouteDetailPage";
 import { LiveOpsPage } from "@/pages/LiveOpsPage";
+import { VehiclesPage } from "@/pages/VehiclesPage";
+import { DriversPage } from "@/pages/DriversPage";
 
 export default function App() {
   return (
@@ -21,6 +23,8 @@ export default function App() {
               <Route path="/trips" element={<TripsPage />} />
               <Route path="/trips/:tripId" element={<TripDetailPage />} />
               <Route path="/routes/:routeId" element={<RouteDetailPage />} />
+              <Route path="/vehicles" element={<VehiclesPage />} />
+              <Route path="/drivers" element={<DriversPage />} />
             </Routes>
           </main>
         </div>

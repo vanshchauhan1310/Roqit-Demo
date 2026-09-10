@@ -23,13 +23,17 @@ export interface Route {
   status: string;
   created_at: string;
   stops: RouteStop[];
-  driver_id: string | null;
+    driver_id: string | null;
+  driver_name: string | null;
   vehicle_id: string | null;
+  vehicle_name: string | null;
   pickup_time: string | null;
   planned_delivery_time: string | null;
   capacity_kg?: number | null;
   used_capacity_kg?: number | null;
   frozen_until_sequence?: number | null;
+  prediction_count?: number | null;
+  avg_delay_risk?: number | null;
 }
 
 export interface RouteStopInput {

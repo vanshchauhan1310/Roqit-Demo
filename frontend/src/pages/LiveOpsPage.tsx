@@ -6,6 +6,7 @@ import { useLnsHistory } from "@/hooks/useLnsHistory";
 import { useFleet } from "@/hooks/useFleet";
 import { LiveOpsMap } from "@/components/liveops/LiveOpsMap";
 import { ActivityFeed } from "@/components/liveops/ActivityFeed";
+// WeatherCard removed - using LiveWeatherCard instead
 import { KpiTiles, type KpiPoint } from "@/components/liveops/KpiTiles";
 import { KpiDetailModal, type KpiDetailView } from "@/components/liveops/KpiDetailModal";
 import { PlanStrip } from "@/components/liveops/PlanStrip";
@@ -13,6 +14,8 @@ import { DetailDrawer, type Selection } from "@/components/liveops/DetailDrawer"
 import { LnsImpactPanel } from "@/components/liveops/LnsImpactPanel";
 import { AlertStrip } from "@/components/liveops/AlertStrip";
 import { OpsIntelPanel } from "@/components/liveops/OpsIntelPanel";
+import { useCurrentWeather } from "@/hooks/useCurrentWeather";
+import { LiveWeatherCard } from "@/components/liveops/LiveWeatherCard";
 import { triggerLns } from "@/api/routes";
 
 function useClock() {
@@ -37,6 +40,7 @@ export function LiveOpsPage() {
   const [optimizing, setOptimizing] = useState(false);
   const lns = useLnsHistory();
   const fleet = useFleet();
+  const { data: currentWeather, isLoading: weatherLoading } = useCurrentWeather();
   const [impactOpen, setImpactOpen] = useState(false);
   const [impactRunId, setImpactRunId] = useState<string | null>(null);
   const [intelOpen, setIntelOpen] = useState(false);
@@ -171,6 +175,11 @@ export function LiveOpsPage() {
         onOpenRoutesDetail={() => setKpiView("routes")}
       />
 
+      {/* Live weather card — conditions at the service area center */}
+      <div className="mt-4">
+        <LiveWeatherCard weather={currentWeather} loading={weatherLoading} />
+      </div>
+
       {/* Detailed drill-down for the queue / trips / routes KPI tiles */}
       {kpiView && (
         <KpiDetailModal
@@ -202,8 +211,11 @@ export function LiveOpsPage() {
 
       {/* Mission grid: event rail | map + plan builder */}
       <div className="grid xl:grid-cols-[330px_1fr] gap-4 mt-4 items-start">
-        <div className="rounded-xl border border-slate-800 bg-slate-900/70 h-[640px] flex flex-col overflow-hidden">
-          <ActivityFeed events={events} onOpenTrip={openTrip} onOpenRoute={openRoute} />
+        <div className="space-y-4">
+          {/* WeatherCard removed - using LiveWeatherCard instead */}
+          <div className="rounded-xl border border-slate-800 bg-slate-900/70 h-[520px] flex flex-col overflow-hidden">
+            <ActivityFeed events={events} onOpenTrip={openTrip} onOpenRoute={openRoute} />
+          </div>
         </div>
 
         <div className="space-y-4 min-w-0">

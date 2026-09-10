@@ -6,6 +6,7 @@ export interface KpiPoint {
   trips: number;
   routes: number;
   utilization: number;
+  predictions: number;
 }
 
 function Spark({
@@ -142,6 +143,7 @@ export function KpiTiles({
   routes,
   utilization,
   avgLatency,
+  predictions,
   feedSecondsLeft,
   feedIntervalSec,
   feedEnabled,
@@ -157,8 +159,9 @@ export function KpiTiles({
   queue: number;
   trips: number;
   routes: number;
-  utilization: number;
+    utilization: number;
   avgLatency: number | null;
+  predictions: number;
   feedSecondsLeft: number;
   feedIntervalSec: number;
   feedEnabled: boolean;

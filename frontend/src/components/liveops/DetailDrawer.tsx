@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchTrip } from "@/api/trips";
 import { fetchRoute } from "@/api/routes";
+import { predictDelayForTrip, predictExpectedDelayForTrip } from "@/api/predictions";
 import type { Trip } from "@/types/trip";
 import type { Route, RouteStop } from "@/types/route";
+import { DelayBadge } from "./DelayBadge";
 
 export type Selection = { type: "trip" | "route"; id: string } | null;
 
@@ -41,6 +43,16 @@ export function StatusPill({ status }: { status: string | null }) {
 }
 
 function TripDetailBody({ trip, onOpenRoute }: { trip: Trip; onOpenRoute: (id: string) => void }) {
+  const { data: delayPrediction, isLoading: delayLoading } = useQuery({
+    queryKey: ["delay-prediction", trip.trip_id],
+    queryFn: () => predictDelayForTrip(trip.trip_id),
+    staleTime: 5 * 60 * 1000,
+  });
+  const { data: expectedDelay } = useQuery({
+    queryKey: ["expected-delay", trip.trip_id],
+    queryFn: () => predictExpectedDelayForTrip(trip.trip_id),
+    staleTime: 5 * 60 * 1000,
+  });
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -73,6 +85,14 @@ function TripDetailBody({ trip, onOpenRoute }: { trip: Trip; onOpenRoute: (id: s
         <Field label="Delay" value={trip.delay_minutes != null ? `${trip.delay_minutes} min` : "—"} />
         <Field label="Traffic" value={trip.traffic_density ?? "—"} />
         <Field label="Weather" value={trip.weather_condition ?? "—"} />
+        <div className="flex justify-between items-center gap-3 py-1.5 border-b border-gray-50 text-sm">
+          <span className="text-gray-500">Delay risk</span>
+          <DelayBadge
+            prediction={delayPrediction}
+            loading={delayLoading}
+            expectedMinutes={expectedDelay?.predicted_delay_minutes}
+          />
+        </div>
       </div>
 
       {trip.route_id ? (

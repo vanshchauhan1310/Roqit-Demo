@@ -14,6 +14,7 @@ from app.optimization.lns.optimizer import LNSOptimizer, LNSDestroyStrategy, LNS
 from app.optimization.audit.logger import audit_logger
 from app.infrastructure.queue import Queue, QueueJob, get_queue
 from app.core.config import settings
+from app.workers.trip_assignment_worker import assignment_paused, sweep_unassigned_trips
 
 
 class LNSWorker:
@@ -51,6 +52,13 @@ class LNSWorker:
         print("Running LNS optimization (manual trigger)...")
 
         db = SessionLocal()
+        # Pause greedy assignment + unassigned sweeps for the duration of the
+        # run: the assignment worker holds the writer-funnel advisory lock for
+        # the whole (slow) candidate search, and with the sweeper re-feeding
+        # jobs the funnel is never free - every LNS iteration timed out
+        # acquiring it and runs finished with 0 iterations. The in-flight job
+        # (if any) finishes first; its commit releases the funnel for LNS.
+        assignment_paused.set()
         try:
             # Get active routes to optimize (eager-load stops: avoids N+1 lazy-load per feasibility check)
             routes = db.query(Route).options(selectinload(Route.stops)).filter(
@@ -76,11 +84,22 @@ class LNSWorker:
             print(f"LNS optimization error: {e}")
             return False
         finally:
+            # Un-pause first so the immediate catch-up sweep is allowed through.
+            assignment_paused.clear()
+            # Immediately re-drain whatever was skipped while paused instead of
+            # waiting up to 60s for the sweeper's next tick.
+            try:
+                deferred = sweep_unassigned_trips(batch=25)
+                if deferred:
+                    print(f"LNS run finished: re-enqueued {deferred} deferred trip(s)")
+            except Exception:
+                print("LNS run finished: post-run sweep failed (sweeper will retry)")
             db.close()
 
     def run_once(self) -> None:
         """Run LNS optimization once (for manual trigger)."""
         db = SessionLocal()
+        assignment_paused.set()
         try:
             routes = db.query(Route).options(selectinload(Route.stops)).filter(
                 Route.status.in_(["planned", "active", "in-transit"])
@@ -94,6 +113,7 @@ class LNSWorker:
             print(f"LNS result: {result}")
 
         finally:
+            assignment_paused.clear()
             db.close()
 
 
