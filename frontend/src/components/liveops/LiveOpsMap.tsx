@@ -5,7 +5,7 @@ import type { Trip } from "@/types/trip";
 import type { Route } from "@/types/route";
 import { HYDERABAD_CENTER, HYDERABAD_BOUNDS } from "@/utils/serviceArea";
 import { colorForRouteId, ROUTE_COLORS } from "@/utils/routeColors";
-import { useRoadRoutes } from "@/hooks/useRoadRoutes";
+import { RoadRoutes } from "@/hooks/RoadRoutes";
 import type { AssignmentFlight } from "@/hooks/useOpsEvents";
 
 /** Cache icon instances — react-leaflet replaces marker DOM whenever the
@@ -131,10 +131,10 @@ export function LiveOpsMap({ incomingTrips, routes, selectedRouteId, onSelectRou
         .filter((r) => r.positions.length > 1),
     [routes],
   );
-  const { geometryByKey: roadGeometry, isLoading: roadLoading } = useRoadRoutes(roadRequests);
-
   return (
-    <div className="relative rounded-xl border border-slate-700/60 overflow-hidden bg-slate-900 dark-map">
+    <RoadRoutes requests={roadRequests}>
+      {({ geometryByKey: roadGeometry, isLoading: roadLoading }: { geometryByKey: Map<string, [number, number][]>; isLoading: boolean }) => (
+        <div className="relative rounded-xl border border-slate-700/60 overflow-hidden bg-slate-900 dark-map">
       <MapContainer
         center={HYDERABAD_CENTER}
         zoom={11}
@@ -281,5 +281,7 @@ export function LiveOpsMap({ incomingTrips, routes, selectedRouteId, onSelectRou
         )}
       </div>
     </div>
+      )}
+    </RoadRoutes>
   );
 }

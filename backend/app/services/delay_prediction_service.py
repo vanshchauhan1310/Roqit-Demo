@@ -138,8 +138,17 @@ async def engineer_features(db: Session, trip: Trip) -> dict:
     contract = _load_feature_contract()
     vocabulary = contract["categorical_vocabulary"]
 
-    vehicle = trip.vehicle
-    driver = trip.driver
+    # Eager-load vehicle/driver via direct queries if not already loaded
+    if trip.vehicle is None and trip.vehicle_id:
+        from app.models.vehicle import Vehicle
+        vehicle = db.query(Vehicle).filter(Vehicle.vehicle_id == trip.vehicle_id).first()
+    else:
+        vehicle = trip.vehicle
+    if trip.driver is None and trip.driver_id:
+        from app.models.driver import Driver
+        driver = db.query(Driver).filter(Driver.driver_id == trip.driver_id).first()
+    else:
+        driver = trip.driver
 
     if vehicle is None:
         raise MissingFeatureDataError(
@@ -150,8 +159,25 @@ async def engineer_features(db: Session, trip: Trip) -> dict:
             f"Trip {trip.trip_id} has no assigned driver - assign it to a route before running delay prediction"
         )
 
+    # Fallback chain for weather: live OpenWeather -> stored column -> forecasts table -> "Clear"
     live_weather = await get_ml_weather_condition(trip.gps_start_lat, trip.gps_start_lon)
-    weather_condition = live_weather or trip.weather_condition
+    weather_condition: str | None = live_weather or trip.weather_condition
+
+    # If still no weather, check the forecasts table (cached weather data)
+    if weather_condition is None:
+        try:
+            from app.models.forecast import Forecast
+            forecast = db.execute(
+                select(Forecast).where(Forecast.trip_id == trip.trip_id)
+            ).scalar_one_or_none()
+            if forecast is not None:
+                weather_condition = forecast.weather_condition
+        except Exception:
+            pass
+
+    # If still no weather at this point, default to "Clear" rather than error out
+    if weather_condition is None:
+        weather_condition = "Clear"
 
     missing = [f for f in REQUIRED_TRIP_FIELDS if getattr(trip, f) is None]
     if weather_condition is None:

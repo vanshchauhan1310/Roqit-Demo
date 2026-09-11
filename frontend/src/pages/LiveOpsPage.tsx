@@ -76,7 +76,7 @@ export function LiveOpsPage() {
     lastKpiRef.current = now;
     setKpiData((d) => [
       ...d.slice(-39),
-      { t: now, queue: incoming.length, trips: allTrips.length, routes: routes.length, utilization },
+      { t: now, queue: incoming.length, trips: allTrips.length, routes: routes.length, utilization, predictions: 0 },
     ]);
   }, [incoming.length, allTrips.length, routes.length, utilization]);
 
@@ -163,6 +163,7 @@ export function LiveOpsPage() {
         routes={routes.length}
         utilization={utilization}
         avgLatency={avgLatency}
+        predictions={0}
         feedSecondsLeft={Math.ceil(sim.nextTripInMs / 1000)}
         feedIntervalSec={Math.round(sim.intervalMs / 1000)}
         feedEnabled={sim.enabled}

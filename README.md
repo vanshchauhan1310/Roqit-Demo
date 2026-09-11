@@ -1,516 +1,680 @@
-# RoQit — Fleet Optimization Platform
+﻿# Roqit — Real-Time Dynamic Route Optimization & Trip Assignment Platform
 
-A full-stack **dynamic fleet optimization platform**: trips stream in, a background
-engine assigns each one to a route in real time (greedy best-insertion), and a
-periodic **LNS** optimizer keeps re-arranging the whole plan to reduce cost.
-Three independently deployable parts — `frontend`, `backend`, `ml` — that work
-together over HTTP.
+> **A production-grade online vehicle-routing platform.** Trips stream in continuously; each is assigned in real time by a **Greedy Best-Insertion** heuristic, and the global plan is periodically improved by a **Large Neighborhood Search (LNS)** — all running behind a live command centre where every engine decision is visible on a map and in a streaming event feed.
 
-- **frontend/** — React + TypeScript + Vite, TailwindCSS, React Query, React Router, Recharts, Leaflet.
-- **backend/** — FastAPI + SQLAlchemy + Alembic, backed by PostgreSQL (hosted on [Supabase](https://supabase.com)), with an in-process Redis-backed job queue and worker threads.
-- **ml/** — Standalone Python service (scikit-learn/XGBoost) exposing `/predict/*` endpoints, called by the backend over HTTP so it can scale/deploy separately.
-
-This README documents **all the logic used across the system** — the algorithms,
-the rules, the thresholds, and where each one lives in the code.
-
-> Deeper reading: [README2.md](README2.md) (route-builder / TSP / ETA code
-> walkthrough) · [ROQIT_PLATFORM.md](ROQIT_PLATFORM.md) (platform blueprint) ·
-> [USER_GUIDE.md](USER_GUIDE.md) (UI walkthrough) ·
-> [MANUAL_TEST_GUIDE.md](MANUAL_TEST_GUIDE.md) (acceptance checklist).
+**Stack:** React 18 + TypeScript (Vite) · FastAPI + Uvicorn · SQLAlchemy · PostgreSQL · Redis · XGBoost · OSRM · Leaflet · Tailwind CSS · TanStack Query · Docker Compose
 
 ---
 
-## 1. Architecture at a glance
+## 1. Quick Start
 
-```
-┌──────────────┐  POST /api/trips   ┌────────────────────────────────────┐
-│   frontend   │ ─────────────────► │   backend (FastAPI :8000)          │
-│  React :5173 │ ◄─ poll ~2-5s ──── │  ├─ REST API (routers + services)  │
-│  Live Ops UI │                    │  ├─ Redis queue (job lists)        │
-└──────────────┘                    │  └─ lifespan → Supervisor threads: │
-┌──────────────┐  HTTP /predict/*   │      1. trip-assignment worker     │
-│    ml        │ ◄───────────────── │      2. LNS worker                 │
-│  :8001       │                    │      3. LNS scheduler (every N min)│
-└──────────────┘                    │      4. unassigned-trips sweeper   │
-┌──────────────┐   SQLAlchemy       ├────────────────────────────────────┤
-│  Supabase    │ ◄───────────────── │  external HTTP (stateless calls):  │
-│ (PostgreSQL) │                    │  OSRM · Nominatim · OpenWeather    │
-└──────────────┘                    └────────────────────────────────────┘
+### One-command start (Docker)
+
+```powershell
+cd "C:\Users\Vanshraj\OneDrive - Aion Tech Solutions Ltd (ATS)\Desktop\Roqit-Demo"
+docker compose up -d
+docker compose ps             # wait for all 5 services → "healthy"
 ```
 
-- **Supervisor** (`backend/app/workers/supervisor.py`) is started by the FastAPI
-  **lifespan hook** (`backend/app/main.py`) — you never run workers separately.
-  All four threads are daemons, so process shutdown never hangs.
-- **Queue** (`backend/app/infrastructure/queue.py`) is Redis-backed:
-  pending jobs live in the list `queue:<name>` (LPUSH enqueue / BRPOP dequeue
-  with a 5s timeout); delayed retries live in the sorted set
-  `queue:<name>:delayed` and are promoted to the main list when due.
+Open **http://localhost:5173** → click **Live Ops** in the sidebar.
 
----
+> **Never run two backend instances.** Duplicate instances = duplicate worker threads on the same Redis queues.
 
-## 2. Data model & status lifecycles
+### Running locally (without Docker)
 
-Core tables (`backend/app/models/`): `trips`, `routes`, `route_stops`,
-`vehicles`, `drivers`.
+```powershell
+# Backend — lifespan auto-starts all 4 worker threads
+cd backend; .venv\Scripts\activate
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-- **trip → route (M:1)** — an assigned trip has a non-null `trip.route_id`
-  (a denormalized `String` FK, set by greedy insertion and cleared by LNS
-  destroy). A trip with `route_id IS NULL` is **unassigned / incoming**.
-- **route_stop** — the ordered tour of a route. `stop_type` ∈
-  `pickup | delivery | waypoint`; sequence ordering enforces **pickup before
-  delivery** for every trip's P/D pair.
-- IDs are human-facing strings: `TRP-XXXXXXXX`, `VEH…`, `DRV…` and UUIDs for
-  `route_id` / `stop_id`.
+# ML service (separate terminal — needed for predictions)
+cd ml; venv\Scripts\activate
+python -m uvicorn service.ml_api:app --host 0.0.0.0 --port 8001
 
-### Trip status transitions — lazily computed
-There is **no background status job**. `trip_service._apply_auto_status_transition`
-(`backend/app/services/trip_service.py`) advances status **every time a trip is
-read** (`get_trip` / `list_trips`):
-
-```
-scheduled ──(now >= pickup_time)──► in-transit ──(now >= actual_delivery_time)──► delivered
+# Frontend (separate terminal)
+cd frontend; npm install; npm run dev
 ```
 
-It only touches `scheduled` / `in-transit` — a manually-set
-`Delayed` / `Cancelled` / `Delivered` status is never overridden.
-Routes get the same treatment (`route_service._apply_auto_status_transition`):
-`planned → in-transit` once `pickup_time` passes.
-
-### Trip creation — derived fields
-`trip_service.create_trip` fills in everything a dispatcher can't reliably know
-(rule-based, clearly labeled, not ML):
-
-| Field | Logic |
-|---|---|
-| `status` | `"scheduled"` |
-| `actual_distance_km` | `planned_distance_km × 1.12` (demo overage factor) |
-| `actual_delivery_time` | `planned_delivery_time + 45 min` |
-| `weather_condition` | ML service prediction from start coords (`weather_client`) |
-| `road_type` | `"Highway"` if `planned_distance_km ≥ 15` else `"City Road"` |
-| `traffic_density` | `High` 8-9,17-19h · `Medium` 7,10,16,20h · else `Low` |
-| `fuel_price_per_l` | `DEFAULT_FUEL_PRICE_PER_L` (92.5) — no live feed |
-| validation | rejects `load_weight_kg` above the named vehicle's capacity |
-
 ---
 
-## 3. Async ingestion pipeline (trip → queue → worker)
+## 2. Service Roles & Ports
+
+| Container | Port | Responsibility |
+|-----------|------|----------------|
+| `frontend` | 5173 | React SPA + nginx — serves UI, proxies `/api` → backend |
+| `backend` | 8000 | FastAPI — HTTP routes + 4 background worker threads + DB layer |
+| `ml` | 8001 | ML service — XGBoost models (delay risk, ETA, fuel, trip cost) + OR-Tools |
+| `postgres` | 5432 | Single source of truth — trips, routes, stops, drivers, vehicles, audit |
+| `redis` | 6379 | Async job queues (`trip-assignment`, `lns-optimization`) + writer-funnel locks |
+| `osrm` (optional) | 5000 | OSRM routing engine — falls back to public demo server if not running |
+
+**Optional services degrade gracefully:** OSRM unavailable → haversine distance estimates. No weather API key → defaults to `"Clear"`.
+---
+
+## 3. Architecture
+
+### 3.1 Topology
 
 ```
-POST /api/trips ──► persist trip (status=scheduled, route_id=NULL)
-      │ returns 202 {"trip_ref": ..., "status": "RECEIVED"} immediately
-      └─► queue.enqueue("trip-assignment", {trip_id})
-                 │
-                 ▼
-     trip-assignment worker (BRPOP, 5s timeout)
-                 │ handle_job → _assign_trip
-                 ▼
-      greedy_insertion.assign_trip(db, trip)
+                         ┌──────────────────────────────────────────────────┐
+  CLIENT                 │            Docker Compose (single host)          │
+  http://localhost:5173  │  ┌──────────────┐        ┌───────────────┐      │
+ ──────────────►         │  │ nginx  :5173 │ proxy  │  React SPA    │      │
+                         │  └──────────────┘        └──────┬────────┘      │
+                         │                          │        │  /api/*     │
+  ┌────────────┐         │  ┌──────────────┐ ┌─────►│  API GW      │      │
+  │  Browser   │         │  │   nginx      │ │      └──────┬────────┘      │
+  │  Leaflet,  │         │  └──────────────┘ │             │               │
+  │  Tailwind  │         │         ▼                      │               │
+  └────────────┘         │  ┌────────────────┐            │               │
+                         │  │ FastAPI  :8000 │            │               │
+                         │  │   Uvicorn    │            │               │
+                         │  └──┬──┬──┬──┬───┘            │               │
+                         │     │  │  │  │                 │               │
+  ┌────────────┐         │ ┌───┘  │  │  │  ┌─────────────┘               │
+  │  PostgreSQL│         │ ▼      ▼  ▼  ▼                          │
+  │  :5432     │◄────────┼─│ trips  │ │routes │    ┌────────────────┐ │
+  │  (Supabase)│         │ │ drivers│ │stops  │    │  Redis  :6379   │ │
+  └────────────┘         │ │vehicles│ │audit  │    │ live ops queue │ │
+                         │ └────────┘ └───────┘    │ trip-assign…   │ │
+                         │                          │ lns-queue      │ │
+                         │                          └────────────────┘ │
+                         │                           │                │
+                         │ ┌──────────────┐           │                │
+                         │ │ ML svc :8001│◄──────────┼─────────┐    │
+                         │ │ OR-Tools    │           │         │    │
+                         │ └──────────────┘           ▼         ▼    │
+                         │            OSRM :5000        │  (LNS worker) │
+                         └───────────────────────────────────────────────┘
 ```
 
-**Retry logic** (`queue.py: Worker._process_job`): a job whose handler returns
-`False` (exception, trip vanished, DB error) is requeued with delay
-`retry_delay × attempt` (60s, 120s, 180s) and dropped after 3 attempts.
+### 3.2 Background Workers
 
-**Safety net — UnassignedSweeper** (`supervisor.py:48`,
-`trip_assignment_worker.sweep_unassigned_trips`): every **60s** it re-enqueues up
-to **25** trips that still have `route_id IS NULL` and status
-`scheduled`/`unassigned`. This drains any backlog created while the worker was
-down or a job was lost — it's why Live Ops "queue depth" returns to ~0 when the
-feed is idle.
+The `Supervisor` (`backend/app/workers/supervisor.py`) spawns **4 daemon threads** inside the API process — started by the FastAPI lifespan hook (`backend/app/main.py:21-27`):
+
+| Thread | Queue / Interval | Role |
+|--------|-----------------|------|
+| **Trip Assignment Worker** | `queue:trip-assignment` — continuous Redis consumer (5s BRPOP timeout) | Pops jobs → greedy best-insertion → assigns trip to best route or creates new route |
+| **LNS Worker** | `queue:lns-optimization` — manual trigger only | Destroys ~20% of plan → repairs via regret-2 → accepts only if cost improves → full atomic rollback |
+| **Unassigned Sweeper** | 60-second heartbeat | Re-enqueues trips with no RouteStop (max 25/batch) so backlog drains |
+| **Trip Completion Worker** | 180-second heartbeat | Auto-completes trips 10 min after assignment → frees vehicle/driver → re-predicts ML for affected routes |
 
 ---
 
-## 4. The live assignment engine (greedy best insertion)
+## 4. The Assignment Engine
 
-File: `backend/app/optimization/greedy/insertion.py` (+ `candidates/search.py`,
-`feasibility/engine.py`, `scoring/cost_function.py`). Four stages run for every
-trip:
+### 4.1 Trip Lifecycle
 
 ```
-1. Candidate search   → which existing routes could take this trip?
-2. Position search    → every valid (pickup, delivery) insertion position
-3. Feasibility check  → hard constraints only; any violation ⇒ reject
-4. Cost scoring       → weighted cost; minimum wins
-      │ no feasible insertion anywhere
-      ▼
-5. Fallback: create a NEW route (vehicle + driver selection below)
+T=0.0s   POST /api/trips
+           │
+           ▼
+         Trip created: status="scheduled", route_id=NULL, vehicle_id=NULL, driver_id=NULL
+           │
+           ▼
+         create_trip_assignment_job(trip_id) → Redis queue:trip-assignment
+           │
+           ▼
+         API returns 202 RECEIVED (async — assignment is background)
+
+           ▼  milliseconds later if worker is idle
+  ┌─────────────────────────┐
+  │ TripAssignmentWorker    │
+  │ 1. acquire_writer_lock  │  Redis advisory lock — serializes with LNS + completion
+  │ 2. validate_trip_assign│  checks RouteStop existence (not just route_id NULL)
+  │ 3. greedy_insertion     │  candidate_search → feasibility → cost scoring → best insertion
+  │ 4. apply_insertion      │  creates RouteStop(pickup) + RouteStop(delivery)
+  │ 5. audit_log            │  OptimizationAudit row
+  │ 6. release_lock         │
+  └─────────────────────────┘
+           │
+           ▼
+         Trip now has: route_id, vehicle_id, driver_id, assigned_at
+           │
+           ▼  10 min later (demo lifecycle)
+  ┌─────────────────────────┐
+  │ TripCompletionWorker    │  sweep every 180s
+  │ status="completed"      │  frees cargo weight → route capacity recomputed
+  │ route completed if last │  frees vehicle + driver for new work
+  │ re-predict ML           │  for affected routes
+  └─────────────────────────┘
 ```
 
-### 4.1 Candidate search (`candidates/search.py`)
+### 4.2 Greedy Best-Insertion
 
-Multi-stage filter, then a composite score (higher = better). Limits:
-`max_candidates = 50`, `max_pickup_distance_km = 50`, `min_capacity_buffer = 0.1`.
+**File:** `backend/app/optimization/greedy/insertion.py`
 
-| Stage | Rule |
-|---|---|
-| Status | route ∈ `planned / active / in-transit` |
-| Vehicle | `vehicle_type` must equal the trip's hint (if the trip has one) |
-| Capacity | remaining capacity ≥ `load × 1.1` (10% safety buffer) |
-| Geography | haversine distance from the route's current position (or last stop) to the trip's pickup ≤ 50 km |
-| Time / direction | stubs (`return True`) — TODO |
+For each incoming trip:
+1. **Candidate Search** — routes where pickup is within `GREEDY_MAX_PICKUP_DISTANCE_KM` (50 km default)
+2. **Feasibility Check** — capacity, driver HOS, time windows, route duration
+3. **Cost Scoring** — 6 weighted components:
+   ```
+   cost = 0.30 × extra_distance_km
+        + 0.25 × extra_duration_minutes
+        + 0.10 × delay_impact_minutes
+        + 0.10 × fuel_cost_rupees
+        + 0.10 × delay_risk           ← ML or rule-based (traffic/weather/road)
+        + 0.05 × route_change_penalty
+   ```
+4. **Select minimum cost** feasible insertion
+### 4.4 Delay Risk in Cost Function
 
-**Score = utilization (0–30) + closeness (0–30) + driver rating (0–20) +
-driver experience (0–10) + fewer-stops bonus (0–20).** Top 50 by score move on.
+The inline `delay_risk` component is a **fast heuristic** (not the ML prediction) — combines route/driver historical delay rates with traffic/weather/road type risks. Returns 0.0–1.0.
 
-### 4.2 Feasibility engine (`feasibility/engine.py`) — hard constraints
-
-Any *hard* violation makes the candidate position infeasible. Defaults:
-`max_route_duration_hours = 12`, `max_detour_factor = 1.5`,
-`max_delay_minutes = 60`, `max_wait_minutes = 30`.
-
-1. **Capacity** — vehicle load capacity is never exceeded.
-2. **Vehicle compatibility** — type match.
-3. **Driver constraints** — `LICENSE_MISMATCH` when the trip requires a
-   license the driver doesn't have (only checked when the trip has one).
-4. **Route duration** — post-insertion tour ≤ 12h, estimated network-free:
-   haversine ÷ 40 km/h (per-leg OSRM calls here would turn one assignment into
-   hundreds of HTTP round-trips — road-accurate routing is used only where it
-   matters, in display/ETA).
-5. **Time windows**.
-6. **Frozen stops** — stops with `sequence ≤ route.frozen_until_sequence`
-   (committed deliveries) must not move.
-7. **Delay impact** — stub (TODO).
-8. **Detour factor** — stub (TODO).
-9. **Precedence** — pickup sequence < delivery sequence for every trip.
-10. **Geographic compatibility** — stub (TODO).
-
-### 4.3 Cost function (`scoring/cost_function.py`)
-
-Weighted sum of insertion *deltas* (what the route gains by taking this trip):
-
-| Component | Weight | How it's computed |
-|---|---|---|
-| Extra distance (km) | 0.30 | haversine tour length before vs. after |
-| Extra duration (min) | 0.25 | haversine ÷ 40 km/h, before vs. after |
-| Delay impact (min) | 0.20 | slip on downstream stops' windows |
-| Fuel cost (₹) | 0.10 | ML fuel-cost estimate service |
-| Delay risk | 0.10 | traffic/window risk + driver-rating proxy (≤ 1.0) |
-| Change penalty | 0.05 | 2.0 per reordered existing stop, 10.0 if stop count breaks |
-
-Weights auto-normalize to sum 1.0 (`CostWeights.normalize`), so they're tunable.
-
-### 4.4 Greedy insertion & apply (`greedy/insertion.py`)
-
-- For every candidate route, **all** valid `(pickup_seq, delivery_seq)` pairs
-  are enumerated (pickup before delivery) and scored; the global minimum-cost
-  option wins.
-- `apply_insertion` writes the new `RouteStop` rows, renumbers sequences,
-  **bumps `route.version`** (optimistic locking), sets `trip.route_id`, and
-  commits.
-
-### 4.5 Fallback — new route creation (`trip_assignment_worker._create_new_route`)
-
-When no existing route is feasible:
-
-- **Vehicle** — least-loaded-first policy: only `active` (or legacy NULL-status)
-  vehicles of the matching type whose `load_capacity_kg ≥ trip.load`, and whose
-  current committed load (sum of `used_capacity_kg` over `planned/active/
-  in-transit` routes) + this trip stays under capacity. Among eligible vehicles
-  the one with the **most headroom** wins (deterministic tie-break by
-  `vehicle_id`) so work spreads across the fleet.
-- **Driver** — only `active` (or NULL-status) drivers, with
-  **exact** `license_type` match, respecting **14 h hours-of-service**: a
-  driver's already-assigned estimated hours (haversine ÷ 40 km/h + 0.1 h per
-  stop, over `planned/active/in-transit` routes) plus the new trip's estimate
-  must stay ≤ `MAX_DRIVER_HOS_HOURS = 14`. Among eligible drivers the
-  **least-loaded** wins.
-- The route is created with P/D stops (sequences 1–2) and audited as
-  `NEW_ROUTE_CREATED`.
-- **If no vehicle or no driver qualifies**, the trip is marked
-  `status="unassigned"` and **not retried** (a business decision, not an error)
-  — it is audited as `ASSIGNMENT_FAILED`. The sweeper will keep re-offering it,
-  so a permanently-unassignable trip (e.g. a license type no driver holds, or
-  all drivers HOS-capped) shows up as a stuck non-zero **queue depth**.
+The ML `delay_probability` prediction (XGBoost `delay_risk_xgboost_v2`) is computed separately on-demand when the frontend requests it via `/api/predictions/delay/trips/{trip_id}`.
 
 ---
 
-## 5. LNS — periodic global re-optimization
+## 5. LNS — Large Neighborhood Search
 
-Files: `backend/app/optimization/lns/optimizer.py`, `lns/destroy.py`,
-`lns/repair.py`, `workers/lns_worker.py`.
+**File:** `backend/app/optimization/lns/optimizer.py`
 
-**Large Neighborhood Search** improves the *whole* plan, not one trip:
+1. **Destroy** — remove ~20% of trips from routes (`LNS_DESTROY_PERCENTAGE = 0.2`)
+   - Strategies: `RANDOM`, `ROUTE_BASED`, `WORST_COST`
+2. **Repair** — re-insert in optimal order
+   - Strategies: `GREEDY`, `REGRET_2`, `REGRET_3` (regret = "how much does it hurt to leave this trip out")
+3. **Accept/Reject** — only keep if total cost improved
+4. **Atomic Rollback** — restore original `RouteStop` primary keys if rejected (preserves audit comparability)
 
-1. Snapshot the live plan and compute the baseline cost.
-2. **Destroy** — remove ~`LNS_DESTROY_PERCENTAGE` (20%) of trips from the plan.
-   Strategies: `RANDOM` (default), `WORST_COST`, `RELATED`, `ROUTE`, `DELAY`.
-   Destroying a trip clears its `trip.route_id`.
-3. **Repair** — re-insert the removed trips using the same feasibility engine
-   and cost function. Strategies: `GREEDY`, `REGRET-2` (default),
-   `REGRET-3`. Regret-k inserts the trip whose *best-vs-k-th-best* cost gap is
-   largest first — it protects the choices that would be most expensive to
-   postpone.
-4. **Accept / reject** — hill-climbing: a candidate better than the current plan
-   is committed and the search continues from it; a worse one is rolled back.
-   The live plan is therefore **monotonically never worse** than the baseline.
-5. Loop until `LNS_MAX_ITERATIONS` (30) or `LNS_ITERATION_BUDGET_SECONDS` (90).
-   Every accepted iteration compounds. Before/after plan snapshots and the
-   improvement are logged for audit (`PERIODIC_LNS`).
-
-**Triggers:**
-- `LNSScheduler` thread enqueues an `lns-optimization` job every
-  `LNS_INTERVAL_MINUTES` (default 10);
-- the **⚡ LNS button** in Live Ops KPI band enqueues the same job on demand
-  (`POST /api/routes/{id}/optimize` → job → 202);
-- the simulation engine runs LNS every N trips during replays.
-
-Guard rails: needs ≥ 2 routes to run; skipped harmlessly otherwise.
-
----
-
-## 6. Simulation & benchmark engine
-
-File: `backend/app/simulation/engine.py`. Replays historical trips from a CSV
-(ordered by timestamp, `speed_factor` > 1 to fast-forward) through the **real**
-assignment worker and LNS worker, and reports:
-trips assigned/unassigned, routes created, total distance/duration, fuel cost,
-route utilization, assignment latency, and greedy-vs-LNS cost.
-
-- `run_from_csv(...)` — pure replay; optionally runs LNS every N trips.
-- `run_greedy_vs_lns_comparison(csv)` — resets the optimization state, replays
-  greedy-only, replays greedy+LNS (every 50 trips), and reports the
-  `improvement_percentage` — this is the "engine's value" number the Live Ops
-  **⚡ LNS → Engine savings** tile alludes to.
-- Cost model for comparisons: `0.30 × km + 0.25 × hours` (same weight
-  philosophy as the cost function).
-
----
-
-## 7. Manual route building & static TSP optimization
-
-Deep walkthrough: [README2.md](README2.md). Summary of the logic:
-
-- **Geocoding** — Nominatim (OpenStreetMap) with a required identifying
-  User-Agent; results cached on stops.
-- **Live preview** — the frontend calls OSRM directly for the drawn polyline;
-  the backend is not in that loop.
-- **Optimization** (`backend/app/services/route_optimizer.py`) — fetches a real
-  OSRM `/table` **duration/distance matrix**, groups stops into
-  pickup-delivery jobs, adds a depot node (explicit or first stop), then
-  **delegates the combinatorial search to the ML service's OR-Tools optimizer**
-  (`ml_client.optimize_pickup_delivery_route`) with a 10 s solver time limit.
-  The backend owns the real-world I/O; the ML service owns the solver.
-  Two solvers exist, chosen by stop count (exact search for small problems,
-  heuristic for large) — see README2 §6.3.
-
----
-
-## 8. ETA & weather logic
-
-File: `backend/app/services/eta_service.py`, `weather_client.py`.
-
-- **Base duration** — real OSRM route duration when available.
-- **Weather adjustment** — a hand-coded, rule-based multiplier table
-  (`WEATHER_ETA_MULTIPLIERS`) applied to the base duration, keyed by the ML
-  service's weather-condition prediction at the trip's start coordinates:
-  `adjusted = base × multiplier`.
-- **Predicted delivery time** = `pickup_time + adjusted duration`.
-- **Fallback chain** — ML ETA model (XGBoost duration-minutes regression,
-  feature contract `ml/feature_contract_v2.json`) if available, else the
-  rule-based OSRM + weather estimate. Every response labels which path was
-  used — never silently mixing provenance.
-
----
-
-## 9. Live Ops dashboard — telemetry logic
-
-Files: `frontend/src/pages/LiveOpsPage.tsx`, `hooks/useLiveOps.ts`,
-`hooks/useOpsEvents.ts`, `hooks/useTripSimulator.ts`,
-`components/liveops/*`.
-
-**KPI band** (polling, ~2–5 s, react-query):
-
-| Tile | Logic |
-|---|---|
-| Queue depth | count of `GET /api/trips?unassigned=true` — trips with no `RouteStop` reference. Normally 0; a stuck non-zero value means trips are failing assignment (see §4.5) |
-| Trips today | total trip count in session |
-| Active routes | count of routes |
-| Fleet utilization | `Σ used_capacity_kg / Σ capacity_kg` across active routes |
-| Avg assignment | latency from RECEIVED event → route_id, via `useOpsEvents` diffing |
-
-**Event feed** — `useOpsEvents` diffs consecutive polls into an event stream:
-new trip → `RECEIVED`, `route_id` appears → `ASSIGNED` (+ latency), new route →
-`NEW ROUTE CREATED`, LNS → `PLAN UPDATED`. The amber pulsing map dot marks
-incoming (unassigned) trips; each route keeps a stable djb2-hash color across
-renders so the map never visually jitters.
-
-**Auto feed (trip simulator)** — entirely client-side, hitting the real
-`POST /api/trips` so every simulated trip goes through the real
-queue → greedy → LNS pipeline:
-- one trip every **60 s** (countdown ring; toggle persisted in `localStorage`);
-- origin/destination = random **Hyderabad** locations (destination ≠ origin);
-- `load_weight_kg` = 200–1400 kg, `vehicle_type = "Truck"`, GPS coordinates
-  filled in directly (no geocoding needed).
-
----
-
-## 10. Audit trail
-
-File: `backend/app/optimization/audit/logger.py` → `optimization_audit` table.
-**Every** engine decision is persisted (not just printed):
-
-| Audit type | When |
-|---|---|
-| `ONLINE_GREEDY` | trip inserted into an existing route (position, cost, deltas, `greedy-v1`) |
-| `NEW_ROUTE_CREATED` | fallback route created (`greedy-v1`) |
-| `ASSIGNMENT_FAILED` | no vehicle / no driver (reason recorded) |
-| `PERIODIC_LNS` | LNS run (`lns-v1`, improvement, before/after snapshots) |
-
-This table is the ground truth for debugging "why is trip X unassigned?"
-
----
-
-## 11. ML service (port 8001)
-
-- `POST /predict/eta` — XGBoost duration-minutes regression
-  (contract: `ml/feature_contract_v2.json`).
-- `POST /predict/delay` — trip delay prediction; the backend validates
-  features against bounds in `delay_prediction_service.py` before calling.
-- `POST /predict/fuel-cost` — fuel burn/cost estimate used by the cost
-  function's fuel component.
-- `POST /optimize/pickup-delivery` — OR-Tools VRP with pickup-delivery
-  constraints + time windows (used by the manual route optimizer).
-- The backend **never imports ML code** — always HTTP, so the ML service can
-  be redeployed/scaled independently. If it's down, rule-based fallbacks kick
-  in and responses say so.
-
----
-
-## 12. Configuration knobs (`backend/app/core/config.py`, via `.env`)
-
-| Variable | Default | Controls |
-|---|---|---|
-| `DATABASE_URL` | local Postgres | Supabase connection (`postgresql+psycopg2://…?sslmode=require`) |
-| `REDIS_URL` | `redis://localhost:6379/0` | queue backend |
-| `ML_SERVICE_URL` | `http://localhost:8001` | predictions + VRP solver |
-| `GREEDY_MAX_CANDIDATES` | 50 | candidate routes scored per trip |
-| `GREEDY_MAX_PICKUP_DISTANCE_KM` | 50.0 | candidate geo filter |
-| `LNS_INTERVAL_MINUTES` | 10 | scheduler cadence |
-| `LNS_DESTROY_PERCENTAGE` | 0.2 | share of trips destroyed per iteration |
-| `LNS_MAX_ITERATIONS` | 30 | destroy/repair loops per run |
-| `LNS_ITERATION_BUDGET_SECONDS` | 90 | wall-clock cap per run |
-| `OSRM_BASE_URL` | public demo server | routing matrices + geometry |
-| `NOMINATIM_URL` / `GEOCODE_USER_AGENT` | OSM | geocoding (UA required by policy) |
-| `OPENWEATHER_API_KEY` | — | per-stop weather for ETA |
-| `DEFAULT_FUEL_PRICE_PER_L` | 92.5 | fuel pricing input |
-
----
-
-## 13. Known limitations / TODOs (by design, documented)
-
-- Feasibility checks **7 (delay impact)** and **8 (detour factor)** are stubs;
-  candidate search's time-window and direction checks are `return True` stubs.
-- Driver HOS accounting has **no daily reset** — `_driver_worked_hours` sums
-  all `planned/active/in-transit` routes ever, so in a long session every
-  driver eventually saturates and new-route creation fails with
-  "No available driver" (the #1 suspect for a stuck queue depth).
-- Driver `license_type` matching is **exact equality** in new-route creation —
-  a driver with a different license string is never eligible.
-- The UnassignedSweeper re-offers hard-unassignable trips every 60 s, so they
-  churn in the audit log (`ASSIGNMENT_FAILED`) — intentional for demo honesty,
-  noisy at scale.
-- No live fuel-price or GPS feed — demo-derived values (§2) and haversine
-  estimates stand in; OSRM/road-accurate routing is used where users see it.
-
----
-
-## 14. Running everything
-
-### Database
-
-This project uses [Supabase](https://supabase.com) (hosted Postgres) instead of
-a local Postgres container. Create a Supabase project, grab the connection
-string from **Project Settings > Database > Connection string (URI)**, and put
-it in `backend/.env` as `DATABASE_URL` (see `backend/.env.example` for the
-exact format — note the `postgresql+psycopg2://` scheme and
-`?sslmode=require`).
-
-### With Docker
-
-```bash
-cp backend/.env.example backend/.env   # fill in your Supabase DATABASE_URL
-docker-compose up --build
+**Manual trigger:**
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/routes/lns/trigger"
+# Returns 202 + job_id; run takes 6-10s
 ```
 
-- Frontend: http://localhost:5173
-- Backend: http://localhost:8000 (docs at /docs, health at /health)
-- ML service: http://localhost:8001 (health at /health)
-
-### Locally (without Docker)
-
-```bash
-# Backend
-cd backend
-python -m venv .venv && source .venv/bin/activate   # .venv\Scripts\activate on Windows
-pip install -r requirements.txt
-cp .env.example .env   # fill in your Supabase DATABASE_URL
-alembic upgrade head
-uvicorn app.main:app --reload --port 8000   # lifespan auto-starts the workers
-```
-
-```bash
-# Frontend
-cd frontend
-cp .env.example .env
-npm install
-npm run dev
-```
-
-```bash
-# ML service
-cd ml
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python src/train.py --model eta --input data/raw/trips.csv   # train the example ETA model
-uvicorn service.ml_api:app --reload --port 8001
-```
-
-There is also `./run-all-dev.ps1` (Windows) to start all three at once.
-
-### Seed the demo fleet (Docker)
-
-The engine needs active vehicles + drivers to assign trips — an empty fleet
-sends every trip to the unassigned queue ("No available vehicle / driver").
-Seed once after the first `up`:
-
-```bash
-docker compose exec backend python seed_fleet.py
-```
-
-Idempotent (safe to re-run): 10 vehicles (8 Trucks sized 2–16 t, plus a Tempo
-and a Trailer) and 6 HMV drivers, all `active`, based in Hyderabad — matched to
-what the auto-feed generates (Truck, 200–1400 kg, Hyderabad). Trips created
-while the fleet was empty are recovered automatically by the unassigned
-sweeper within ~60 s of seeding.
+Results appear as SSE events + `OptimizationAudit` rows in the database.
 
 ---
 
-## 15. Where to add new features
+## 6. Frontend — LiveOps Page
 
-| Adding...                                   | Goes in...                                                        |
-|----------------------------------------------|---------------------------------------------------------------------|
-| A new API resource (CRUD)                     | `backend/app/models/`, `schemas/`, `services/`, `api/routes/`      |
-| A new DB table/column                         | `backend/app/models/` + `alembic revision --autogenerate`          |
-| A new optimization constraint                 | `backend/app/optimization/feasibility/engine.py` (`_check_*`)      |
-| A new cost component                          | `backend/app/optimization/scoring/cost_function.py` + `CostWeights`|
-| A new LNS destroy/repair strategy             | `backend/app/optimization/lns/destroy.py` / `repair.py`            |
-| New frontend page                             | `frontend/src/pages/` + register the route in `App.tsx`            |
-| New Live Ops widget                           | `frontend/src/components/liveops/`                                 |
-| Reusable UI (buttons, tables, modals)         | `frontend/src/components/common/`                                   |
-| New API call from the frontend                | `frontend/src/api/` + a hook in `frontend/src/hooks/`               |
-| A new ML model                                | `ml/src/models/` (train/predict), wire into `ml/src/train.py`, add an endpoint in `ml/service/ml_api.py` |
-| Backend calling a new ML endpoint             | `backend/app/services/ml_client.py`                                 |
+**File:** `frontend/src/pages/LiveOpsPage.tsx`
 
-## 16. Conventions
+| Component | What it shows |
+|-----------|---------------|
+| **KPI Tiles** | Queue depth, trips today, active routes, fleet utilization %, avg assignment latency (sparklines, last 40 samples), auto-feed controller (Pause/Start/+Trip/⚡LNS buttons) |
+| **Event Feed** | Streaming log: RECEIVED, ASSIGNED (with latency), NEW ROUTE, PLAN UPDATED, LNS triggered — color-coded + timestamped |
+| **Live Map** | Dark Leaflet map, Hyderabad bounds, amber pulsing dots = incoming trips, numbered stop markers, stable-color route polylines, animated flight lines on assignment |
+| **Plan Strip** | One row per route — P/D chips pop in with spring animation + live capacity bar |
+### 6.1 Polling + SSE
 
-- IDs are named consistently with the schema: `trip_id`, `driver_id`,
-  `vehicle_id`, `route_id`, `stop_id`.
-- All URLs, DB credentials, and API keys come from environment variables — see
-  `.env.example` in `frontend/` and `backend/`. Never commit real `.env` files.
-- The backend never imports ML code directly — it always calls the `ml` service
-  over HTTP, so ML can be scaled or redeployed independently.
-- Optimization internals are network-free haversine (40 km/h assumed) so the
-  hot loop stays sub-second; OSRM is reserved for user-visible routing/ETA.
-- Every engine decision is auditable — if you add a decision path, add an
-  audit row for it.
+```typescript
+// frontend/src/hooks/useLiveOps.ts
+// Called from LiveOpsPage with custom intervals:
+useIncomingTrips(3000)   // GET /api/trips?unassigned=true  — 3s poll
+useAllTripsLive(5000)    // GET /api/trips (limit 1000)     — 5s poll
+useRoutesLive(5000)      // GET /api/routes                 — 5s poll
+```
 
+| Hook | Poll Interval | Endpoint | What it fetches |
+|------|--------------|----------|-----------------|
+| `useIncomingTrips` | **3 seconds** | `GET /api/trips?unassigned=true` | Trips with no RouteStop — the "incoming queue" |
+| `useAllTripsLive` | **5 seconds** | `GET /api/trips` (limit 1000) | All trips — used for event diffing + KPI counts |
+| `useRoutesLive` | **5 seconds** | `GET /api/routes` | All routes, filtered to active statuses |
+
+Plus **SSE** (`useOpsEvents.ts` → `EventSource` to `/api/events/stream`) for instant updates between polls. The `useOpsEvents` hook diffs polling results into human-readable events.
+
+> **Important:** The 3s polling is a **display refresh rate**, NOT the assignment engine's cadence. The assignment worker runs continuously on a Redis queue with sub-second reaction time. If assignment completes in <3s (very common), the trip appears in the UI already fully assigned — driver, vehicle, and delay risk included. This is expected behavior, not a bug.
+
+### 6.2 Trip Simulator (Demo Auto-Feed)
+
+**File:** `frontend/src/hooks/useTripSimulator.ts`
+
+Posts 1 new Hyderabad-only trip every 60 seconds via `POST /api/trips`. Runs entirely client-side against the real API — goes through the real queue → greedy → LNS pipeline. Controlled from the KPI band: **Pause/Start feed**, **+Trip** (fire immediately), countdown ring.
+
+---
+
+## 7. API Reference
+
+### 7.1 Trips
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/trips` | Create trip → `202 RECEIVED` → enqueues assignment job |
+| `GET` | `/api/trips` | List trips (paginated, filterable by status/driver/pickup_date/search) |
+| `GET` | `/api/trips?unassigned=true` | Trips with no RouteStop — the "incoming queue" |
+| `GET` | `/api/trips/{trip_id}` | Single trip detail |
+| `PATCH` | `/api/trips/{trip_id}/status` | Update trip status |
+| `GET` | `/api/trips/{trip_id}/eta-prediction` | Rule-based weather-adjusted ETA |
+| `GET` | `/api/trips/{trip_id}/fuel-cost-estimate` | Fuel cost estimate |
+| `GET` | `/api/trips/{trip_id}/cost-prediction` | Full ML trip cost prediction |
+| `GET` | `/api/trips/{trip_id}/vehicle-intelligence` | Vehicle insights (needs assigned vehicle) |
+| `GET` | `/api/trips/{trip_id}/driver-intelligence` | Driver insights (needs assigned driver) |
+| `PATCH` | `/api/trips/{trip_id}/outcome` | Record real delivery outcome (Delivered/Delayed) |
+
+**Trip creation body:**
+```json
+{
+  "origin": "Madhapur",
+  "destination": "Gachibowli",
+  "gps_start_lat": 17.4483,
+  "gps_start_lon": 78.3915,
+  "gps_end_lat": 17.4401,
+  "gps_end_lon": 78.3489,
+  "load_weight_kg": 1200,
+  "vehicle_type": "Truck"
+}
+```
+Weather, road_type, traffic_density, fuel_price_per_l are auto-filled if omitted.
+
+### 7.2 Routes
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/routes` | List all routes with stops |
+| `GET` | `/api/routes/{route_id}` | Route detail |
+| `POST` | `/api/routes/lns/trigger` | Manual LNS → `202` + `job_id` |
+
+### 7.3 Predictions
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/predictions/delay/trips/{trip_id}` | ML delay risk for specific trip |
+| `POST` | `/api/predictions/delay/latest` | Predict for GPS-latest active trip |
+| `POST` | `/api/predictions/expected-delay/trips/{trip_id}` | Expected delay in minutes |
+
+### 7.4 Realtime
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/events/stream` | SSE stream of live ops events |
+
+### 7.5 Fleet
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` / `POST` | `/api/drivers` | Driver roster CRUD |
+| `GET` / `POST` | `/api/vehicles` | Vehicle roster CRUD |
+
+### 7.6 Health
+
+| Method | Endpoint |
+|--------|----------|
+| `GET` | `/health` |
+| **Alert Strip** | Delay-risk flags (ML), stuck unassigned trips, LNS results |
+| **Detail Drawer** | Slide-over: vehicle + driver, capacity, stop sequence table, delay risk, weather, GPS |
+5. **Fallback** — no feasible route? Create new route with available driver + vehicle (ensures assignment *never fails* due to capacity constraints alone)
+
+**Key files:** `greedy/insertion.py`, `candidates/search.py`, `feasibility/engine.py`, `scoring/cost_function.py`
+
+### 4.3 Writer Funnel Lock
+
+All route/trip mutations serialized through Redis advisory lock `lock:fleet-plan-write`:
+- Assignment worker: 75s lock timeout (queues behind LNS instead of failing)
+- LNS worker: holds lock for every destroy/repair iteration (up to 90s budget)
+- Completion worker: skips sweep if lock busy, retries next 180s cycle
+
+### 4.4 Delay Risk in Cost Function
+
+The inline `delay_risk` component is a **fast heuristic** (not the ML prediction) — combines route/driver historical delay rates with traffic/weather/road type risks. Returns 0.0–1.0.
+
+The ML `delay_probability` prediction (XGBoost `delay_risk_xgboost_v2`) is computed separately on-demand when the frontend requests it via `/api/predictions/delay/trips/{trip_id}`.
+
+---
+
+## 5. LNS — Large Neighborhood Search
+
+**File:** `backend/app/optimization/lns/optimizer.py`
+
+1. **Destroy** — remove ~20% of trips from routes (`LNS_DESTROY_PERCENTAGE = 0.2`)
+   - Strategies: `RANDOM`, `ROUTE_BASED`, `WORST_COST`
+2. **Repair** — re-insert in optimal order
+   - Strategies: `GREEDY`, `REGRET_2`, `REGRET_3` (regret = "how much does it hurt to leave this trip out")
+3. **Accept/Reject** — only keep if total cost improved
+4. **Atomic Rollback** — restore original `RouteStop` primary keys if rejected (preserves audit comparability)
+
+**Manual trigger:**
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/routes/lns/trigger"
+# Returns 202 + job_id; run takes 6-10s
+```
+
+Results appear as SSE events + `OptimizationAudit` rows in the database.
+
+---
+
+## 6. Frontend — LiveOps Page
+
+**File:** `frontend/src/pages/LiveOpsPage.tsx`
+
+| Component | What it shows |
+|-----------|---------------|
+| **KPI Tiles** | Queue depth, trips today, active routes, fleet utilization %, avg assignment latency (sparklines, last 40 samples), auto-feed controller (Pause/Start/+Trip/⚡LNS buttons) |
+| **Event Feed** | Streaming log: RECEIVED, ASSIGNED (with latency), NEW ROUTE, PLAN UPDATED, LNS triggered — color-coded + timestamped |
+| **Live Map** | Dark Leaflet map, Hyderabad bounds, amber pulsing dots = incoming trips, numbered stop markers, stable-color route polylines, animated flight lines on assignment |
+| **Plan Strip** | One row per route — P/D chips pop in with spring animation + live capacity bar |
+| **Alert Strip** | Delay-risk flags (ML), stuck unassigned trips, LNS results |
+| **Detail Drawer** | Slide-over: vehicle + driver, capacity, stop sequence table, delay risk, weather, GPS |
+| **Detail Drawer** | Slide-over: vehicle + driver, capacity, stop sequence table, delay risk, weather, GPS |
+
+### 6.1 Polling + SSE
+
+```typescript
+// frontend/src/hooks/useLiveOps.ts
+// Called from LiveOpsPage with custom intervals:
+useIncomingTrips(3000)   // GET /api/trips?unassigned=true  — 3s poll
+useAllTripsLive(5000)    // GET /api/trips (limit 1000)     — 5s poll
+useRoutesLive(5000)      // GET /api/routes                 — 5s poll
+```
+
+| Hook | Poll Interval | Endpoint | What it fetches |
+|------|--------------|----------|-----------------|
+| `useIncomingTrips` | **3 seconds** | `GET /api/trips?unassigned=true` | Trips with no RouteStop — the "incoming queue" |
+| `useAllTripsLive` | **5 seconds** | `GET /api/trips` (limit 1000) | All trips — used for event diffing + KPI counts |
+| `useRoutesLive` | **5 seconds** | `GET /api/routes` | All routes, filtered to active statuses |
+
+Plus **SSE** (`useOpsEvents.ts`) for instant updates between polls. The `useOpsEvents` hook diffs polling results into human-readable events (RECEIVED → trip first seen, ASSIGNED → route_id appeared, etc.).
+
+> **Important:** The 3s polling is a **display refresh rate**, NOT the assignment engine's cadence. The assignment worker runs continuously on a Redis queue with sub-second reaction time. If assignment completes in <3s (very common), the trip appears in the UI already fully assigned — driver, vehicle, and delay risk included. This is expected behavior, not a bug.
+
+### 6.2 Trip Simulator (Demo Auto-Feed)
+
+**File:** `frontend/src/hooks/useTripSimulator.ts`
+
+Posts 1 new Hyderabad-only trip every 60 seconds via `POST /api/trips`. Runs entirely client-side against the real API — goes through the real queue → greedy → LNS pipeline. Controlled from the KPI band: **Pause/Start feed**, **+Trip** (fire immediately), countdown ring.
+
+---
+
+## 7. API Reference
+
+### 7.1 Trips
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/trips` | Create trip → `202 RECEIVED` → enqueues assignment job |
+| `GET` | `/api/trips` | List trips (paginated, filterable by status/driver/pickup_date/search) |
+| `GET` | `/api/trips?unassigned=true` | Trips with no RouteStop — the "incoming queue" |
+| `GET` | `/api/trips/{trip_id}` | Single trip detail |
+| `PATCH` | `/api/trips/{trip_id}/status` | Update trip status |
+| `GET` | `/api/trips/{trip_id}/eta-prediction` | Rule-based weather-adjusted ETA |
+| `GET` | `/api/trips/{trip_id}/fuel-cost-estimate` | Fuel cost estimate |
+| `GET` | `/api/trips/{trip_id}/cost-prediction` | Full ML trip cost prediction |
+| `GET` | `/api/trips/{trip_id}/vehicle-intelligence` | Vehicle insights (needs assigned vehicle) |
+| `GET` | `/api/trips/{trip_id}/driver-intelligence` | Driver insights (needs assigned driver) |
+| `PATCH` | `/api/trips/{trip_id}/outcome` | Record real delivery outcome (Delivered/Delayed) |
+
+**Trip creation body:**
+```json
+{
+  "origin": "Madhapur",
+  "destination": "Gachibowli",
+  "gps_start_lat": 17.4483,
+  "gps_start_lon": 78.3915,
+  "gps_end_lat": 17.4401,
+  "gps_end_lon": 78.3489,
+  "load_weight_kg": 1200,
+  "vehicle_type": "Truck"
+}
+```
+Weather, road_type, traffic_density, fuel_price_per_l are auto-filled if omitted.
+
+### 7.2 Routes
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/routes` | List all routes with stops |
+| `GET` | `/api/routes/{route_id}` | Route detail |
+| `POST` | `/api/routes/lns/trigger` | Manual LNS → `202` + `job_id` |
+
+### 7.3 Predictions
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/predictions/delay/trips/{trip_id}` | ML delay risk for specific trip |
+| `POST` | `/api/predictions/delay/latest` | Predict for GPS-latest active trip |
+| `POST` | `/api/predictions/expected-delay/trips/{trip_id}` | Expected delay in minutes |
+
+### 7.4 Realtime
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/events/stream` | SSE stream of live ops events |
+
+### 7.5 Fleet
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` / `POST` | `/api/drivers` | Driver roster CRUD |
+| `GET` / `POST` | `/api/vehicles` | Vehicle roster CRUD |
+
+### 7.6 Health
+
+| Method | Endpoint |
+|--------|----------|
+| `GET` | `/health` |
+
+---
+
+## 8. Data Model
+
+### 8.1 Key Tables
+
+| Table | Purpose | Key Fields |
+|-------|---------|------------|
+| `trips` | Customer orders | `trip_id`, `status` (scheduled/assigned/in-transit/completed), `route_id`, `vehicle_id`, `driver_id`, `assigned_at`, `gps_*`, `load_weight_kg`, `weather_condition`, `road_type`, `traffic_density`, `pickup_time`, `planned_delivery_time` |
+| `routes` | Vehicle day plans | `route_id`, `vehicle_id`, `driver_id`, `status` (planned/active/in-transit/completed), `capacity_kg`, `used_capacity_kg`, `remaining_capacity_kg`, `version` (optimistic lock) |
+| `route_stops` | Ordered stops on a route | `stop_id`, `route_id`, `trip_id`, `sequence`, `stop_type` (pickup/delivery/waypoint), `latitude`, `longitude`, `address` |
+| `driver_master` | Driver roster | `driver_id`, `driver_name`, `license_type`, `experience_years`, `rating`, `base_location`, `status` |
+| `vehicle_master` | Vehicle roster | `vehicle_id`, `vehicle_type`, `load_capacity_kg`, `fuel_type`, `avg_kmpl_rated`, `year`, `status` |
+| `optimization_audit` | Every engine decision logged | `assignment_status` (ASSIGNED/NEW_ROUTE/FAILED/UNASSIGNED), `cost`, `distance_delta`, `duration_delta`, `delay_delta`, `algorithm_version` |
+| `delay_predictions` | Persisted ML predictions | `trip_id`, `delay_probability` (0–1), `is_delayed_prediction`, `model_version` (e.g. `delay_risk_xgboost_v2` or `rule_based_fallback`) |
+
+### 8.2 Trip Status Auto-Transition
+
+```python
+# backend/app/services/trip_service.py:_apply_auto_status_transition
+# Called on every trip read — lazy, no background scheduler needed:
+# - "scheduled" → if pickup_time has passed → "in-transit"
+```
+
+The trip completion worker is the **only** thing that sets `status="completed"`.
+
+### 8.3 Assignment State Classification
+
+```python
+# backend/app/optimization/state.py:TripAssignmentStatus
+# A trip is VALIDly assigned ONLY when ALL of:
+# 1. route_id is set
+# 2. the referenced route exists
+# 3. at least one RouteStop exists for the trip
+# 4. that RouteStop's route_id matches trip.route_id
+# 5. trip.vehicle_id and trip.driver_id are populated (not NULL)
+#
+# States: VALID, ORPHANED, MISSING_ROUTE_STOP, MISMATCHED_ROUTE, MISSING_RESOURCES, UNASSIGNED
+```
+
+---
+
+## 9. ML / Prediction Pipeline
+
+**Model:** `delay_risk_xgboost_v2` (XGBClassifier trained on 1298 trips)
+
+**Feature contract:** `ml/feature_contract_v2.json` - exactly 25 fields with categorical vocabularies and numeric ranges.
+
+**Pipeline:**
+```
+Trip -> engineer_features (25-field payload)
+     -> validate (null checks -> category vocab -> numeric ranges)
+     -> POST ml:8001/predict/delay (XGBoost)
+     -> store in delay_predictions table
+     -> return JSON to frontend
+```
+
+**Fallback (ML unreachable):** Deterministic rule-based score. `model_version = rule_based_fallback`.
+
+**Models served by ML container (port 8001):**
+
+| Model | Endpoint | Output |
+|-------|----------|--------|
+| `delay_risk_xgboost_v2` | `/predict/delay` | `delay_probability` (0-1) + `is_delayed_prediction` |
+| Expected-delay regressor | `/predict/expected-delay` | `predicted_delay_minutes` |
+| Fuel consumption | `/predict/fuel-liters` | `predicted_fuel_liters` |
+| Trip cost | `/predict/trip-cost` | cost estimate |
+
+---
+
+## 10. Configuration
+All settings are env-driven via `backend/app/core/config.py`:
+
+| Setting | Default | Meaning |
+|---------|---------|--------|
+| `DATABASE_URL` | `postgresql+psycopg2://fleet:fleet@localhost:5432/fleet_db` | Postgres connection |
+| `ML_SERVICE_URL` | `http://localhost:8001` | ML service base URL |
+| `BACKEND_CORS_ORIGINS` | `http://localhost:5173` | Allowed frontend origin |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis for queues + locks |
+| `TRIP_ASSIGNMENT_QUEUE` | `trip-assignment` | Queue name for assignment jobs |
+| `QUEUE_CONCURRENCY` | 5 | Queue worker concurrency |
+| `GREEDY_MAX_CANDIDATES` | 50 | Max candidate routes to evaluate |
+| `GREEDY_MAX_PICKUP_DISTANCE_KM` | 50.0 | Max distance from pickup to route for candidacy |
+| `LNS_DESTROY_PERCENTAGE` | 0.2 | Fraction of trips to destroy in LNS |
+| `LNS_MAX_ITERATIONS` | 30 | Max destroy/repair cycles per LNS run |
+| `LNS_ITERATION_BUDGET_SECONDS` | 90 | Time budget per LNS run |
+| `DEFAULT_FUEL_PRICE_PER_L` | 92.5 | Default fuel price |
+| `GREEDY_ALGORITHM_VERSION` | `greedy-v1` | Algorithm version tag |
+| `LNS_ALGORITHM_VERSION` | `lns-v1` | Algorithm version tag |
+
+**Cost function weights** (normalized to sum to 1.0):
+
+| Component | Weight |
+|-----------|--------|
+| Distance | 0.30 |
+| Time | 0.25 |
+| Delay impact (min) | 0.10 |
+| Fuel cost (INR) | 0.10 |
+| Delay risk | 0.10 |
+| Change penalty | 0.05 |
+
+---
+
+## 11. Verification & Testing
+
+### 11.1 Health checks
+```powershell
+curl http://localhost:8000/health
+curl http://localhost:8001/health
+```
+
+### 11.2 Smoke test
+```powershell
+$base = "http://localhost:8000/api"
+$trip = irm $base/trips -Method Post -Body (@{origin="Madhapur";destination="Gachibowli";gps_start_lat=17.4483;gps_start_lon=78.3915;gps_end_lat=17.4401;gps_end_lon=78.3489;load_weight_kg=1200;vehicle_type="Truck"} | ConvertTo-Json) -ContentType "application/json"
+do { Start-Sleep 2; $t = irm "$base/trips/$($trip.trip_ref)" } while ($t.route_id -eq $null)
+irm $base/routes/lns/trigger -Method Post
+curl.exe -N http://localhost:8000/api/events/stream
+```
+
+### 11.3 Working-correctly checklist
+- `/health` returns 200
+- `POST /api/trips` returns 202 RECEIVED immediately
+- Every trip obtains a `route_id` within seconds
+- Trips cluster into shared routes; distant ones create new routes
+- Pickup always precedes delivery for every trip
+- Capacity never exceeded
+- LNS trigger returns 202 + audit row; zero trips lost after LNS
+- No `Worker error:` lines flooding server log
+
+### 11.4 Backend test scripts
+| Script | What it does |
+|--------|-------------|
+| `unit_checks.py` | Optimization primitives (no DB writes) |
+| `smoke_test_http.py` | HTTP-level smoke test |
+| `fix_prediction_data.py` | Repair trips missing ML-required fields |
+| `seed_fleet.py` | Seed demo fleet |
+| `seed_demo_data.py` | Seed comprehensive demo data |
+
+---
+
+## 12. Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Trips stay `route_id=NULL` forever | Worker not running, or duplicate backend instances | Restart single backend; check for duplicate `app.main:app` processes |
+| `ASSIGNMENT_FAILED ... No available vehicle` | No active vehicle | Seed vehicles with `status:"active"` |
+| `502 Optimization service unavailable` | ML service on 8001 down | Restart ML: `uvicorn service.ml_api:app --port 8001` |
+| `Worker error: Timeout reading from socket` | Old build | Restart backend |
+| Redis unreachable | Redis not started | Start Redis; check port 6379 |
+| Docker daemon won\\'t start | Docker Desktop not running | Restart Docker Desktop, then `docker compose up -d` |
+| Prediction returns 500 | `feature_contract_v2.json` not in backend container | Bind mount: `./ml/feature_contract_v2.json:/ml/feature_contract_v2.json:ro` |
+| Prediction returns 422 | Trip missing required model fields | Run `fix_prediction_data.py` or re-seed |
+| Trip appears with driver/vehicle already set | Assignment completed in <3s - faster than 3s poll. Expected. | Check backend logs for timestamps |
+
+---
+
+## 13. Seeding Demo Data
+
+Fresh Docker DB auto-seeds drivers + vehicles. To add more:
+
+```powershell
+$base = "http://localhost:8000/api"
+irm $base/drivers -Method Post -Body (@{driver_id="DRV001";driver_name="Ravi Kumar";status="active";license_type="LMV";experience_years=5;rating=4.5} | ConvertTo-Json) -ContentType "application/json"
+irm $base/vehicles -Method Post -Body (@{vehicle_id="VEH001";vehicle_type="Truck";status="active";load_capacity_kg=8000;avg_kmpl_rated=8.0} | ConvertTo-Json) -ContentType "application/json"
+```
+
+**One-off seed scripts:** `seed_fleet.py` (demo fleet), `seed_demo_data.py` (comprehensive demo data).
+
+---
+
+## 14. Stopping / Resetting
+
+```powershell
+docker compose stop          # graceful stop - data preserved
+docker compose start         # resume
+docker compose down -v       # full reset - wipes DB + Redis
+docker compose logs -f       # stream all logs live
+```
+
+---
+
+## 15. Project Structure
+
+Roqit-Demo/
+├── backend/app/
+│   ├── main.py              # FastAPI + lifespan (starts supervisor)
+│   ├── api/routes/          # trips.py, routes.py, drivers.py, vehicles.py, predictions.py, realtime.py, ...
+│   ├── core/config.py       # All env-driven settings
+│   ├── db/                  # base.py + session.py (pool_size=12)
+│   ├── models/              # Trip, Route, RouteStop, Driver, Vehicle, OptimizationAudit, DelayPrediction...
+│   ├── optimization/
+│   │   ├── greedy/insertion.py    # GreedyBestInsertion
+│   │   ├── candidates/search.py   # Candidate route search
+│   │   ├── feasibility/engine.py  # Feasibility checks
+│   │   ├── scoring/cost_function.py # 6-component weighted cost
+│   │   ├── lns/optimizer.py       # LNS destroy/repair/accept-reject
+│   │   ├── audit/logger.py        # OptimizationAudit writer
+│   │   └── state.py               # TripAssignmentStatus, locks, sync helpers
+│   ├── services/             # trip_service, route_service, delay_prediction_service, ...
+│   ├── workers/              # supervisor, trip_assignment_worker, lns_worker, trip_completion_worker
+│   └── infrastructure/       # queue.py (Redis), locks.py (Redis advisory locks)
+├── frontend/src/
+│   ├── pages/LiveOpsPage.tsx  # Main mission-control screen
+│   ├── hooks/useLiveOps.ts    # Polling hooks (3s/5s)
+│   ├── hooks/useOpsEvents.ts  # SSE + diff -> events
+│   ├── hooks/useTripSimulator.ts # 1-trip/min auto-feed
+│   ├── components/liveops/    # KPI tiles, map, plan strip, alert strip, activity feed, drawer
+│   ├── api/                   # Typed API clients
+│   └── types/                 # Trip, Route, DelayPrediction, LnsRun, etc.
+├── ml/                       # ML service: ml_api.py, src/models, src/features, src/optimizer, models_store
+├── docs/                     # All project documentation (see Section 16)
+├── docker-compose.yml         # 5-service orchestration
+└── .env.example               # Environment variable template
+```
+
+---
+
+## 16. Docs Folder - Important Files
+
+All project documentation is consolidated in `docs/`:
+
+| File | Audience | Content |
+|------|----------|--------|
+| `README.md` | Everyone | Root entry point - architecture, quick start, API, troubleshooting (this file) |
+| `ROQIT_PLATFORM.md` | Everyone | Full platform documentation - topology, components, manual test guide, engine details |
+| `LIVEOPS_EXECUTIVE_OVERVIEW.md` | Business stakeholders | Executive summary - capabilities, value, glossary, day-in-the-life |
+| `LIVEOPS_TECHNICAL_GUIDE.md` | Engineers | Technical reference - architecture, data model, algorithms, API, SSE, polling, config, design decisions |
+| `MANUAL_TEST_GUIDE.md` | QA / testers | Manual test procedures - prerequisites, test suite, verification checklist, troubleshooting, load test |
+| `USER_GUIDE.md` | End users | LiveOps screen walkthrough - KPI band, event feed, map, plan builder, detail drawer, creating trips |
+| `PREDICTION_MODEL_DECK.md` | Data engineers / ML | Prediction pipeline deep-dive - feature contract, root causes, fixes, verification |
+
+---
+
+*Roqit - real-time, self-optimizing fleet dispatch. Open http://localhost:5173 -> Live Ops and watch it run.*

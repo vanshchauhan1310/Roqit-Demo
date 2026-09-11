@@ -30,6 +30,10 @@ class TripBase(BaseModel):
     status: Optional[str] = None
     is_delayed: Optional[bool] = None
     weather_condition: Optional[str] = None
+    weather_temp_c: Optional[float] = None
+    weather_humidity: Optional[float] = None
+    weather_wind_speed: Optional[float] = None
+    weather_description: Optional[str] = None
     road_type: Optional[str] = None
     traffic_density: Optional[str] = None
     odometer_start: Optional[int] = None
@@ -50,6 +54,12 @@ class TripBase(BaseModel):
     harsh_accel_count: Optional[int] = None
     stop_count: int = 0
     route_id: Optional[str] = None  # set by the trip-assignment worker
+    # ETA and assignment info
+    eta_minutes: Optional[float] = None
+    predicted_delivery_time: Optional[datetime] = None
+    expected_delay_minutes: Optional[float] = None
+    is_assigned: bool = False
+    assignment_status: Optional[str] = None  # "assigned", "unassigned", "in_transit", "completed"
 
     model_config = ConfigDict(from_attributes=True)
 

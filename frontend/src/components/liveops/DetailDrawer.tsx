@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { fetchTrip } from "@/api/trips";
+import { fetchTrip, fetchTripEta } from "@/api/trips";
 import { fetchRoute } from "@/api/routes";
 import { predictDelayForTrip, predictExpectedDelayForTrip } from "@/api/predictions";
 import type { Trip } from "@/types/trip";
@@ -53,6 +53,16 @@ function TripDetailBody({ trip, onOpenRoute }: { trip: Trip; onOpenRoute: (id: s
     queryFn: () => predictExpectedDelayForTrip(trip.trip_id),
     staleTime: 5 * 60 * 1000,
   });
+  // Live weather-adjusted ETA (ML duration prediction + OpenWeather condition).
+  const { data: eta } = useQuery({
+    queryKey: ["trip-eta", trip.trip_id],
+    queryFn: () => fetchTripEta(trip.trip_id),
+    staleTime: 5 * 60 * 1000,
+  });
+  const weatherLabel =
+    eta?.weather_condition ?? trip.weather_condition ?? null;
+  const deliveryEta = eta?.predicted_delivery_time ?? trip.predicted_delivery_time ?? null;
+  const expectedDelayMin = eta?.expected_delay_minutes ?? trip.expected_delay_minutes ?? null;
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -84,7 +94,21 @@ function TripDetailBody({ trip, onOpenRoute }: { trip: Trip; onOpenRoute: (id: s
         <Field label="Actual delivery" value={fmt(trip.actual_delivery_time)} />
         <Field label="Delay" value={trip.delay_minutes != null ? `${trip.delay_minutes} min` : "—"} />
         <Field label="Traffic" value={trip.traffic_density ?? "—"} />
-        <Field label="Weather" value={trip.weather_condition ?? "—"} />
+        <Field
+          label="Weather"
+          value={
+            weatherLabel
+              ? `${weatherLabel}${trip.weather_temp_c != null ? ` · ${trip.weather_temp_c.toFixed(1)}°C` : ""}${
+                  trip.weather_humidity != null ? ` · ${Math.round(trip.weather_humidity)}%` : ""
+                }`
+              : "—"
+          }
+        />
+        <Field label="ETA (predicted delivery)" value={deliveryEta ? fmt(deliveryEta) : "—"} />
+        <Field
+          label="Expected delay"
+          value={expectedDelayMin != null ? `${Math.round(expectedDelayMin)} min` : "—"}
+        />
         <div className="flex justify-between items-center gap-3 py-1.5 border-b border-gray-50 text-sm">
           <span className="text-gray-500">Delay risk</span>
           <DelayBadge

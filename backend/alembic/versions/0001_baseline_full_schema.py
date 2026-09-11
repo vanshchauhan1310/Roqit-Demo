@@ -1,7 +1,7 @@
 """Baseline: create the full schema from the current SQLAlchemy models.
 
 Revision ID: 0001_baseline
-Revises:
+Revises: 000000000000
 Create Date: 2026-09-01
 
 Why a single baseline:
@@ -33,7 +33,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "0001_baseline"
-down_revision: Union[str, None] = None
+down_revision: Union[str, None] = "000000000000"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -1,4 +1,4 @@
-from sqlalchemy import String, DateTime, Float, BigInteger, ForeignKey
+from sqlalchemy import String, DateTime, Float, BigInteger, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -65,6 +65,10 @@ class Trip(Base):
     # Kept as a String (no FK) to avoid a UUID/string type mismatch while still
     # enabling the fast "is this trip already assigned?" checks.
     route_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Timestamp when the trip was created. Used by the assignment worker to
+    # defer processing of newly created trips so they accumulate in the queue.
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     vehicle: Mapped["Vehicle"] = relationship(back_populates="trips")
     driver: Mapped["Driver"] = relationship(back_populates="trips")

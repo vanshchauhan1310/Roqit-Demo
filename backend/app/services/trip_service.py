@@ -1,5 +1,6 @@
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from uuid import UUID
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -10,8 +11,10 @@ from app.models.realtime_fleet_status import RealtimeFleetStatus
 from app.models.route import Route, RouteStop
 from app.models.trip import Trip
 from app.models.vehicle import Vehicle
+from app.services.delay_prediction_service import _rule_based_delay_risk
 from app.schemas.trip import TripCreate, TripFilterOptions, TripOutcomeUpdate
 from app.core.service_area import validate_trip_within_service_area
+from app.db.session import SessionLocal
 from app.services.geocode_client import geocode_address
 from app.services.weather_client import get_ml_weather_condition
 
@@ -253,6 +256,7 @@ def list_unassigned_trips(db: Session) -> list[Trip]:
             db.add(trip)
             any_changed = True
         trip.stop_count = stop_count or 0
+        _enrich_trip_assignment_status(trip)
         trips.append(trip)
 
     if any_changed:
@@ -283,7 +287,56 @@ def get_trip(db: Session, trip_id: str) -> Trip | None:
         db.refresh(trip)
 
     trip.stop_count = stop_count or 0
+    _enrich_trip_assignment_status(trip)
     return trip
+
+
+def _enrich_trip_assignment_status(trip: Trip) -> None:
+    """Set assignment status based on trip's current state. Also fetches vehicle/driver
+    from the assigned route if they're missing on the trip record."""
+    db = SessionLocal()
+    try:
+        # If trip has route_id but missing vehicle/driver info, fetch from route
+        if trip.route_id and (not trip.vehicle_id or not trip.driver_id or not trip.vehicle_type or not trip.driver_name):
+            # route_id is stored as string, convert to UUID for lookup
+            try:
+                route_uuid = UUID(trip.route_id) if isinstance(trip.route_id, str) else trip.route_id
+            except (ValueError, AttributeError):
+                route_uuid = None
+            if route_uuid:
+                route = db.get(Route, route_uuid)
+                if route:
+                    if not trip.vehicle_id and route.vehicle_id:
+                        trip.vehicle_id = route.vehicle_id
+                    if not trip.driver_id and route.driver_id:
+                        trip.driver_id = route.driver_id
+                    # Fetch vehicle type from vehicle_master
+                    if trip.vehicle_id and not trip.vehicle_type:
+                        vehicle = db.get(Vehicle, trip.vehicle_id)
+                        if vehicle:
+                            trip.vehicle_type = vehicle.vehicle_type
+                    # Fetch driver name from driver_master
+                    if trip.driver_id and not trip.driver_name:
+                        from app.models.driver import Driver
+                        driver = db.get(Driver, trip.driver_id)
+                        if driver:
+                            trip.driver_name = driver.driver_name
+    finally:
+        db.close()
+
+    # Determine assignment status
+    trip.is_assigned = bool(trip.route_id and trip.vehicle_id and trip.driver_id)
+
+    _status = (trip.status or "").lower()
+    if _status in ("delivered", "delayed", "cancelled", "completed"):
+        trip.assignment_status = "completed"
+    elif trip.route_id and trip.vehicle_id and trip.driver_id:
+        if _status == "in-transit":
+            trip.assignment_status = "in_transit"
+        else:
+            trip.assignment_status = "assigned"
+    else:
+        trip.assignment_status = "unassigned"
 
 
 def list_trips(
@@ -330,6 +383,7 @@ def list_trips(
             db.add(trip)
             any_changed = True
         trip.stop_count = stop_count or 0
+        _enrich_trip_assignment_status(trip)
         trips.append(trip)
 
     if any_changed:
@@ -386,4 +440,8 @@ def get_latest_trip_by_gps_activity(db: Session) -> Trip | None:
     )
     if latest_status is None:
         return None
-    return db.get(Trip, latest_status.current_trip_id)
+    return db.execute(
+        select(Trip)
+        .options(selectinload(Trip.vehicle), selectinload(Trip.driver))
+        .where(Trip.trip_id == latest_status.current_trip_id)
+    ).scalar_one_or_none()

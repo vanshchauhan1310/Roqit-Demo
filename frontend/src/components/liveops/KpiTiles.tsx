@@ -143,7 +143,7 @@ export function KpiTiles({
   routes,
   utilization,
   avgLatency,
-  predictions,
+  predictions: _predictions,
   feedSecondsLeft,
   feedIntervalSec,
   feedEnabled,
@@ -159,7 +159,7 @@ export function KpiTiles({
   queue: number;
   trips: number;
   routes: number;
-    utilization: number;
+  utilization: number;
   avgLatency: number | null;
   predictions: number;
   feedSecondsLeft: number;

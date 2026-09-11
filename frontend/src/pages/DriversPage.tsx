@@ -28,7 +28,7 @@ export function DriversPage() {
   }, [drivers, debouncedSearch, status]);
 
   const statusOptions = useMemo(
-    () => Array.from(new Set(drivers.map((d) => d.status).filter(Boolean))).sort(),
+    () => Array.from(new Set(drivers.map((d) => d.status).filter(Boolean))).sort() as string[],
     [drivers],
   );
 

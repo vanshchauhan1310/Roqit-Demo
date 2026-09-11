@@ -16,12 +16,14 @@ function vehicleMatches(v: Vehicle, search: string, type: string, status: string
   if (status && v.status !== status) return false;
   if (search) {
     const q = search.toLowerCase();
-    const haystack = [v.vehicle_id, v.vehicle_type, v.make, v.model, v.fuel_type, v.base_location]
+    const haystack = [v.vehicle_id, v.vehicle_type, v.make, v.model, v.fuel_type]
       .filter(Boolean)
       .join(" ")
       .toLowerCase();
     if (!haystack.includes(q)) return false;
   }
+  return true;
+}
 
 export function VehiclesPage() {
   const { vehicles, loading } = useFleet();
@@ -36,12 +38,12 @@ export function VehiclesPage() {
   }, [vehicles, debouncedSearch, type, status]);
 
   const typeOptions = useMemo(
-    () => Array.from(new Set(vehicles.map((v) => v.vehicle_type).filter(Boolean))).sort(),
+    () => Array.from(new Set(vehicles.map((v) => v.vehicle_type).filter(Boolean))).sort() as string[],
     [vehicles],
   );
 
   const statusOptions = useMemo(
-    () => Array.from(new Set(vehicles.map((v) => v.status).filter(Boolean))).sort(),
+    () => Array.from(new Set(vehicles.map((v) => v.status).filter(Boolean))).sort() as string[],
     [vehicles],
   );
 
@@ -117,7 +119,4 @@ export function VehiclesPage() {
       </div>
     </div>
   );
-}
-
-  return true;
 }

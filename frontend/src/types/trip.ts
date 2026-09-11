@@ -29,6 +29,23 @@ export interface Trip {
   load_weight_kg: number | null;
   load_value: number | null;
   route_id: string | null;
+  // Assignment + ETA + live weather enrichment
+  is_assigned: boolean;
+  assignment_status: string | null;
+  eta_minutes: number | null;
+  predicted_delivery_time: string | null;
+  expected_delay_minutes: number | null;
+  weather_temp_c: number | null;
+  weather_humidity: number | null;
+  weather_wind_speed: number | null;
+  weather_description: string | null;
+}
+
+export interface TripEtaPrediction {
+  weather_condition: string | null;
+  weather_multiplier: number | null;
+  predicted_delivery_time: string | null;
+  expected_delay_minutes: number | null;
 }
 
 export interface TripFilterOptions {

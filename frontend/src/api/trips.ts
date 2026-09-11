@@ -1,5 +1,5 @@
 import { apiClient } from "./client";
-import type { CreateTripPayload, Trip, TripFilterOptions, TripFilters } from "@/types/trip";
+import type { CreateTripPayload, Trip, TripEtaPrediction, TripFilterOptions, TripFilters } from "@/types/trip";
 import type { VehicleIntelligence } from "@/types/vehicleIntelligence";
 import type { DriverIntelligence } from "@/types/driverIntelligence";
 
@@ -32,6 +32,12 @@ export async function fetchTripFilterOptions(): Promise<TripFilterOptions> {
 
 export async function fetchTrip(tripId: string): Promise<Trip> {
   const { data } = await apiClient.get<Trip>(`/trips/${tripId}`);
+  return data;
+}
+
+/** Live weather-adjusted ETA from the backend (ML model + OpenWeather fallback chain). */
+export async function fetchTripEta(tripId: string): Promise<TripEtaPrediction> {
+  const { data } = await apiClient.get<TripEtaPrediction>(`/trips/${tripId}/eta-prediction`);
   return data;
 }
 
